@@ -36,6 +36,7 @@ import {
   sectionViews,
   serverOf,
   shownPath,
+  splitPath,
   stateOf,
   summary,
   touch,
@@ -54,9 +55,19 @@ function spec(id: SectionId): SectionSpec {
   return s
 }
 
-/** A section's heading as drawn, open or folded. */
-function head(id: SectionId, slots: Record<string, number>, open = spec(id).isOpen): string {
-  return `${open ? G.open : G.closed} ${fill(spec(id).heading, slots)}`
+/** A section card's title row as drawn, open or folded. The counts are the badge's, so `slots` only documents the call. */
+function head(id: SectionId, _slots: Record<string, number>, open = spec(id).isOpen): string {
+  return `${open ? G.open : G.closed} ${spec(id).heading}`
+}
+
+/** The count drawn flush right on a section card's title row. */
+function badge(id: SectionId, slots: Record<string, number>): string {
+  return fill(spec(id).badge, slots)
+}
+
+/** Cells inside a card at `cols` body columns: less two border cells and the padding each side. */
+function inside(cols: number = T.pane.dockColumns): number {
+  return Math.max(T.pane.minColumns, cols) - 2 - 2 * T.pane.cardPaddingX
 }
 
 type World = {
@@ -221,9 +232,16 @@ describe('tools, connectors and skills', () => {
     await call($, 'Bash', { command: 'pwd' })
     for (const surface of SURFACES) {
       const ui = await $.ui.mount(paneAsk(surface) as never)
-      const line = `Bash ${G.count}2${G.separator}Read ${G.count}1`
+      const line = `${G.tool} Bash`
       const tools = spec('tools')
       expect((await ui.find({ type: 'Text', text: head('tools', { n: 3 }) }))?.text).toBe(head('tools', { n: 3 }))
+      expect((await ui.find({ type: 'Text', text: badge('tools', { n: 3 }) }))?.text).toBe(badge('tools', { n: 3 }))
+      if (!tools.isOpen) await ui.press({ key: 'fold-tools' })
+      const order = (await ui.findAll({ type: 'Text' })).map(x => x.text).filter(x => x.startsWith(`${G.tool} `))
+      // A one-part row draws the same words in its row Text and its run Text: count each row once.
+      expect([...new Set(order)]).toEqual([`${G.tool} Bash`, `${G.tool} Read`])
+      expect((await ui.findAll({ type: 'Text' })).some(x => x.text === `${G.count}2`)).toBe(true)
+      if (!tools.isOpen) await ui.press({ key: 'fold-tools' })
       expect((await ui.find({ type: 'Text', text: line })) !== undefined).toBe(!tools.isOpen ? false : true)
       await ui.press({ key: 'fold-tools' })
       expect((await ui.find({ type: 'Text', text: line })) !== undefined).toBe(!tools.isOpen)
@@ -244,11 +262,12 @@ describe('tools, connectors and skills', () => {
     for (const surface of SURFACES) {
       const all = await texts($, surface)
       expect(all).toContain(head('connectors', { n: 2 }))
+      expect(all).toContain(badge('connectors', { n: 2 }))
       expect(all).toContain(`${G.connector} chrome`)
-      expect(all).toContain(` ${G.count}2`)
+      expect(all).toContain(`${G.count}2`)
       expect(all).toContain(`${G.connector} Gmail`)
       expect(all.some(x => x.includes('ccd_'))).toBe(false)
-      expect(all.some(x => x.startsWith(`${G.closed} ${fill(spec('tools').heading, { n: 0 })}`) || x.startsWith(`${G.open} ${fill(spec('tools').heading, { n: 0 })}`))).toBe(false)
+      expect(all.includes(head('tools', {}, true)) || all.includes(head('tools', {}, false))).toBe(!spec('tools').hideWhenEmpty)
     }
   })
 
@@ -262,8 +281,10 @@ describe('tools, connectors and skills', () => {
     for (const surface of SURFACES) {
       const all = await texts($, surface)
       expect(all).toContain(head('skills', { n: 1 }))
+      expect(all).toContain(badge('skills', { n: 1 }))
       expect(all).toContain(`${G.skill} tdd`)
       expect(all).toContain(head('tools', { n: 3 }))
+      expect(all).toContain(badge('tools', { n: 3 }))
     }
   })
 
@@ -278,7 +299,9 @@ describe('tools, connectors and skills', () => {
     await call($, 'Edit', { file_path: `${CWD}/broken.ts`, command: 'bad' })
     const all = await texts($, 'terminal')
     expect(all).toContain(head('tools', { n: 2 }))
+    expect(all).toContain(badge('tools', { n: 2 }))
     expect(all).toContain(head('files', { n: 0 }))
+    expect(all).not.toContain(badge('files', { n: 0 }))
     expect(all).toContain(spec('files').empty)
   })
 })
@@ -294,9 +317,11 @@ describe('files', () => {
       await call($, 'Read', { file_path: 'C:\\elsewhere\\notes.md' })
       const all = await texts($, surface)
       expect(all).toContain(head('files', { n: 3 }))
+      expect(all).toContain(badge('files', { n: 3 }))
       const rows = all.filter(x => x === G.file.new || x === G.file.edit || x === G.file.read)
       expect(rows).toEqual([G.file.read, G.file.edit, G.file.new])
-      expect(all).toContain(' C:/elsewhere/notes.md')
+      expect(all).toContain(' notes.md')
+      expect(all).toContain('  C:/elsewhere')
       expect(all).toContain(' old.ts')
       expect(all).toContain(' new.ts')
     })
@@ -329,6 +354,7 @@ describe('files', () => {
     await $.prompt.mention({ mention: 'd.md', path: `${CWD}/d.md`, agentId: 's1' } as never)
     const all = await texts($, 'desktop')
     expect(all).toContain(head('files', { n: 1 }))
+    expect(all).toContain(badge('files', { n: 1 }))
     expect(all).toContain(' a.md')
   })
 
@@ -343,16 +369,43 @@ describe('files', () => {
     const all = await texts($, 'terminal')
     expect(all).toContain(fill(T.text.more, { n: 1 }))
     expect(all).toContain(head('files', { n: limit + 1 }))
+    expect(all).toContain(badge('files', { n: limit + 1 }))
   })
 
-  test('a narrow pane cuts a path from the front so the name stays', async ($, on) => {
+  test('a file shows its name, then its folder cut from the front; a narrow card drops the folder, then cuts the name', async ($, on) => {
     engine(on)
     await start($)
     await call($, 'Read', { file_path: `${CWD}/very/deep/folder/structure/that/goes/on/target-file.ts` })
-    const all = await texts($, 'terminal', 'dock', T.pane.minColumns)
-    const row = all.find(x => x.startsWith(` ${G.ellipsis}`))
-    expect(row?.endsWith('target-file.ts')).toBe(true)
-    expect((row ?? '').length).toBe(T.pane.minColumns - G.file.read.length)
+    // Docked: the name whole, the folder after it keeping its nearest end, the row exactly the card's inside.
+    const wide = await texts($, 'terminal')
+    const folder = wide.find(x => x.startsWith(`  ${G.ellipsis}`))
+    expect(folder?.endsWith('goes/on')).toBe(true)
+    const row = wide.find(x => x.startsWith(`${G.file.read} target-file.ts  `))
+    expect((row ?? '').length).toBe(inside())
+    // Narrow: no room for the folder beside the name, so only the name.
+    const narrow = await texts($, 'terminal', 'dock', T.pane.minColumns)
+    expect(narrow).toContain(' target-file.ts')
+    expect(narrow.some(x => x.includes('goes/on'))).toBe(false)
+    // Narrower than the name itself: the name is cut from the front, its end kept.
+    await call($, 'Read', { file_path: `${CWD}/${'n'.repeat(40)}-end.ts` })
+    const cut = (await texts($, 'terminal', 'dock', T.pane.minColumns)).find(x => x.startsWith(` ${G.ellipsis}`))
+    expect(cut?.endsWith('-end.ts')).toBe(true)
+    expect((cut ?? '').length).toBe(inside(T.pane.minColumns) - G.file.read.length)
+  })
+
+  test('a folder is left out below its minimum room and drawn at it', () => {
+    const t = T
+    const name = 'a.ts'
+    // Card inside such that the folder gets exactly `minFolderColumns`, then one cell fewer.
+    const at = G.file.read.length + 1 + name.length + 2 + t.files.minFolderColumns
+    const ledger = { ...blankLedger('/r'), files: [{ path: '/r/abcdefghij/a.ts', kind: 'read' as const, last: 1 }] }
+    const rowAt = sectionViews(ledger, at, t).find(v => v.id === 'files')?.rows[0]
+    expect(rowAt?.parts).toHaveLength(3)
+    expect(rowAt?.parts[2]?.text.length).toBe(2 + t.files.minFolderColumns)
+    const rowUnder = sectionViews(ledger, at - 1, t).find(v => v.id === 'files')?.rows[0]
+    expect(rowUnder?.parts).toHaveLength(2)
+    expect(splitPath('a.ts')).toEqual({ folder: '', name: 'a.ts' })
+    expect(splitPath('x/y/a.ts')).toEqual({ folder: 'x/y', name: 'a.ts' })
   })
 })
 
@@ -371,7 +424,10 @@ describe('to-do', () => {
     for (const surface of SURFACES) {
       const all = await texts($, surface)
       expect(all).toContain(head('todo', { done: 1, total: 3 }))
-      expect(all).toContain(bar(1, 3, Math.min(T.todo.barWidth, T.pane.dockColumns), T))
+      expect(all).toContain(badge('todo', { done: 1, total: 3 }))
+      const widest = fill(T.text.percent, { pct: 100 }).length
+      expect(all).toContain(bar(1, 3, Math.min(T.todo.barWidth, inside() - widest - 1), T))
+      expect(all).toContain(fill(T.text.percent, { pct: 33 }))
       expect(all).toContain(`${G.todo.done} read`)
       expect(all).toContain(`${G.todo.doing} write`)
       expect(all).toContain(`${G.todo.todo} test`)
@@ -390,10 +446,12 @@ describe('to-do', () => {
     await call($, T.todo.updateTool, { taskId: '99', status: 'completed' })
     let all = await texts($, 'terminal')
     expect(all).toContain(head('todo', { done: 1, total: 2 }))
+    expect(all).toContain(badge('todo', { done: 1, total: 2 }))
     expect(all).toContain(`${G.todo.doing} two again`)
     await call($, T.todo.updateTool, { taskId: '7', status: 'deleted' })
     all = await texts($, 'desktop')
     expect(all).toContain(head('todo', { done: 0, total: 1 }))
+    expect(all).toContain(badge('todo', { done: 0, total: 1 }))
   })
 
   test('a failed list write leaves the list as it was', async ($, on) => {
@@ -471,6 +529,67 @@ describe('inline and lifecycle', () => {
     expect(await texts($, 'terminal')).toContain(spec('goal').empty)
     await call($, 'Bash', { command: 'ls' })
     expect(await texts($, 'terminal')).toContain(head('tools', { n: 1 }, spec('tools').isOpen))
+  })
+})
+
+describe('cards', () => {
+  for (const surface of SURFACES) {
+    test(`each section is a bordered card under the pane title; an empty card shows no count (${surface})`, async ($, on) => {
+      engine(on)
+      await start($)
+      const ui = await $.ui.mount(paneAsk(surface) as never)
+      const title = await ui.find({ type: 'Text', text: T.pane.title })
+      expect(title !== undefined).toBe(T.pane.showTitle)
+      const shown = T.sections.filter(x => !x.hideWhenEmpty)
+      for (const x of shown) {
+        const card = await ui.find({ type: 'Box', key: `section-${x.id}` })
+        expect(card?.props.borderStyle).toBe(T.pane.cardBorder)
+        expect(card?.props.borderColor).toBe(T.colors.border)
+        expect(card?.props.paddingX).toBe(T.pane.cardPaddingX)
+      }
+      // Nothing used yet: no `0` badges beside the empty lines.
+      const words = (await ui.findAll({ type: 'Text' })).map(x => x.text)
+      expect(words.includes(badge('connectors', { n: 0 }))).toBe(false)
+      expect(words.includes(badge('files', { n: 0 }))).toBe(false)
+      await ui.unmount()
+    })
+  }
+
+  test('a finished to-do is struck and dimmed, the running one is heavy, the bar shows its share', async ($, on) => {
+    engine(on)
+    await start($)
+    await call($, 'TodoWrite', {
+      todos: [
+        { content: 'read', status: 'completed', activeForm: '' },
+        { content: 'write', status: 'in_progress', activeForm: '' },
+        { content: 'test', status: 'pending', activeForm: '' },
+        { content: 'ship', status: 'pending', activeForm: '' },
+      ],
+    })
+    const ui = await $.ui.mount(paneAsk('desktop') as never)
+    // `find` matches by inclusion, so the row Text ('✓ read') would match first: take the run itself.
+    const run = async (text: string) => (await ui.findAll({ type: 'Text', text })).find(x => x.text === text)
+    const done = await run(' read')
+    expect(done?.props.strikethrough === true).toBe(T.todo.strikeDone)
+    expect(done?.props.color).toBe(T.colors.todo.done)
+    expect((await run(' write'))?.props.weight).toBe('semibold')
+    expect((await run(' test'))?.props.strikethrough).toBe(undefined)
+    expect((await ui.find({ type: 'Text', text: fill(T.text.percent, { pct: 25 }) })) !== undefined).toBe(true)
+    expect((await ui.find({ type: 'Text', text: badge('todo', { done: 1, total: 4 }) })) !== undefined).toBe(true)
+    await ui.unmount()
+  })
+
+  test('the bar keeps its width from 0% to 100%, and never overruns a narrow card', () => {
+    const widest = fill(T.text.percent, { pct: 100 }).length
+    const one = (done: number, cols: number) => {
+      const l = { ...blankLedger(), todos: [0, 1, 2].map(i => ({ id: String(i), text: 't', state: (i < done ? 'done' : 'todo') as 'done' | 'todo' })) }
+      return sectionViews(l, cols, T).find(v => v.id === 'todo')?.rows[0]
+    }
+    const widths = [0, 1, 3].map(d => one(d, inside())?.parts[0]?.text.length)
+    expect(new Set(widths).size).toBe(1)
+    expect(one(3, inside())?.aside?.[0]?.text).toBe(fill(T.text.percent, { pct: 100 }))
+    const narrow = inside(T.pane.minColumns)
+    expect((one(1, narrow)?.parts[0]?.text.length ?? 0) + 1 + widest).toBeLessThanOrEqual(narrow)
   })
 })
 

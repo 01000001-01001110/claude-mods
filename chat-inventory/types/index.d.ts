@@ -12,8 +12,10 @@ export type SectionId = 'goal' | 'todo' | 'connectors' | 'skills' | 'files' | 't
 /** One section as the pane draws it. The order of `sections` in the data is the order on screen. */
 export interface SectionSpec {
   id: SectionId
-  /** Header label; `{n}`, `{done}` and `{total}` are filled in where the section has them. */
+  /** Card title, beside the fold arrow. */
   heading: string
+  /** Count drawn flush right on the card's title row; `{n}`, `{done}` and `{total}` are filled in. Empty: no count. */
+  badge: string
   /** Open when the chat starts; a press on the header flips it for this session. */
   isOpen: boolean
   /** Left out entirely while it has nothing to list, instead of showing `empty`. */
@@ -55,8 +57,14 @@ export interface Tuning {
     openAtStart: boolean
     /** Narrowest body the drawing plans for, so a path keeps some room. */
     minColumns: number
-    /** Blank rows between sections. */
+    /** Blank rows between section cards. */
     sectionGap: number
+    /** Draw the title as the pane's first row (the app shows no title while only one pane is open). */
+    showTitle: boolean
+    /** Border style of each section card (`round`, `single`, ...). */
+    cardBorder: string
+    /** Cells of padding inside a card, each side. */
+    cardPaddingX: number
   }
   sections: SectionSpec[]
   goal: {
@@ -64,8 +72,10 @@ export interface Tuning {
     maxChars: number
   }
   todo: {
-    /** Cells of the progress bar, at most; it shrinks to the body. */
+    /** Cells of the progress bar, at most; it shrinks to the card. */
     barWidth: number
+    /** Strike through finished to-dos as well as dimming them. */
+    strikeDone: boolean
     /** Tool names whose input carries a whole to-do list (`todos`). */
     listTools: string[]
     /** Tool name that adds one task (`subject`). */
@@ -82,6 +92,8 @@ export interface Tuning {
     tools: Record<string, FileTool>
     /** Count `@` mentions in the prompt as reads. */
     countMentions: boolean
+    /** Cells a file's folder needs beside its name before it is drawn at all. */
+    minFolderColumns: number
   }
   connectors: {
     /** Patterns (String.raw) cut from the front of a server name, in order. */
@@ -102,6 +114,7 @@ export interface Tuning {
     file: Record<FileKind, string>
     connector: string
     skill: string
+    tool: string
     count: string
     barFull: string
     barEmpty: string
@@ -109,9 +122,13 @@ export interface Tuning {
     separator: string
   }
   colors: {
+    title: Paint
     heading: Paint
+    badge: Paint
+    border: Paint
     bar: Paint
     count: Paint
+    folder: Paint
     file: Record<FileKind, Paint>
     todo: Record<TodoState, Paint>
   }
@@ -130,6 +147,8 @@ export interface Tuning {
     reset: string
   }
   text: {
+    /** Beside the progress bar; `{pct}` is the share done. */
+    percent: string
     more: string
     opened: string
     notPlaced: string

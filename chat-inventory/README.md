@@ -12,38 +12,43 @@ Inspired by [chat-inventory](https://github.com/kenny1798/claude-mods).
 
 ## What it shows
 
-Docked beside the transcript (terminal under `/tui fullscreen`, the side panel in the desktop app), one section under another, each with a header you can click or press to fold:
+Docked beside the transcript (terminal under `/tui fullscreen`, the side panel in the desktop app), the pane opens with its title and then one card per section. Each card's title row folds it when clicked or pressed, with its count flush right:
 
 ```
-▾ GOAL
-Add a retry to the upload client and cover it with tests
-
-▾ TO-DO 1/3
-████████░░░░░░░░░░░░░░░░
-☑ Read the upload client
-▶ Add the retry
-☐ Write the tests
-
-▾ CONNECTORS 1
-◆ chrome ×4
-
-▾ SKILLS 1
-✦ tdd ×1
-
-▾ FILES 3
-+ src/retry.ts
-~ src/upload.ts
-· README.md
-
-▸ TOOLS 9
+In this chat
+╭──────────────────────────────────────────╮
+│ ▾ Goal                                   │
+│ Add a retry to the upload client and     │
+│ cover it with tests                      │
+╰──────────────────────────────────────────╯
+╭──────────────────────────────────────────╮
+│ ▾ To-do                           1 of 3 │
+│ ██████████░░░░░░░░░░░░░░░░░░░░       33% │
+│ ✓ R̶e̶a̶d̶ ̶t̶h̶e̶ ̶u̶p̶l̶o̶a̶d̶ ̶c̶l̶i̶e̶n̶t̶                 │
+│ ◐ Add the retry with backoff             │
+│ ○ Write the tests                        │
+╰──────────────────────────────────────────╯
+╭──────────────────────────────────────────╮
+│ ▾ Connectors                           1 │
+│ ◆ chrome                              ×4 │
+╰──────────────────────────────────────────╯
+╭──────────────────────────────────────────╮
+│ ▾ Files                                3 │
+│ + retry.ts  src/net                      │
+│ ~ upload-client.ts  src/net              │
+│ · README.md                              │
+╰──────────────────────────────────────────╯
+╭──────────────────────────────────────────╮
+│ ▸ Tools                          9 calls │
+╰──────────────────────────────────────────╯
 ```
 
 - **Goal**: the first prompt you typed that went through (not a slash command), up to 160 characters.
-- **To-do**: a progress bar and the list, from `TodoWrite`, `TaskCreate`/`TaskUpdate`, or a plan tool whose name ends in `update_plan`. Hidden until there is a list.
+- **To-do**: a progress bar with its percentage, then the list (finished items dimmed and struck through, the running one in bold), from `TodoWrite`, `TaskCreate`/`TaskUpdate`, or a plan tool whose name ends in `update_plan`. Hidden until there is a list.
 - **Connectors**: MCP servers the main chat called, with call counts. `plugin_<x>_`, `claude-in-` and `claude_ai_` are cut from the front of server names, and the app's own `ccd_*` servers are left out.
 - **Skills**: skills the model ran through the `Skill` tool, with counts.
-- **Files**: one flat list, newest first. `+` made here, `~` changed, `·` only read. A file written where none was before is `+` and stays `+` however often it is edited. A read never turns a change back into a read. Files you `@`-mention count as reads. Paths inside the session's folder are shown relative to it.
-- **Tools**: one line of every built-in tool used and how often. Folded by default.
+- **Files**: one flat list, newest first, each file's name and then its folder, dimmed. `+` made here, `~` changed, `·` only read. When the pane is narrow the folder goes first, then the name is cut from the front. A file written where none was before is `+` and stays `+` however often it is edited. A read never turns a change back into a read. Files you `@`-mention count as reads. Paths inside the session's folder are shown relative to it.
+- **Tools**: every built-in tool used, most used first, with its count. Folded by default; the title row shows the total calls.
 
 Inline above the prompt (a terminal too narrow to dock, or not fullscreen) the pane draws one row:
 
@@ -65,9 +70,9 @@ Only the main chat counts. Subagents' calls are left out, because agent-roster s
 
 Everything is in `data/chat-inventory.ts`:
 
-- `pane`: title, docked width, inline rows, whether it opens at session start, gap between sections.
-- `sections`: order on screen, heading text (`{n}`, `{done}`, `{total}`), open or folded at start, hidden while empty, the empty line, rows before `+N more`.
-- `goal.maxChars`, `todo` (bar width, which tools keep the list), `files` (how many are remembered, which tools read or write which argument, whether `@` mentions count), `connectors` (name prefixes cut, servers hidden), `tools` (hidden tools, the skill tool).
+- `pane`: title and whether it is drawn, docked width, inline rows, whether it opens at session start, card border and padding, gap between cards.
+- `sections`: order on screen, card title, the count beside it (`{n}`, `{done}`, `{total}`; hidden while the card is empty), open or folded at start, hidden while empty, the empty line, rows before `+N more`.
+- `goal.maxChars`, `todo` (bar width, striking finished items, which tools keep the list), `files` (how many are remembered, which tools read or write which argument, whether `@` mentions count, the room a folder needs), `connectors` (name prefixes cut, servers hidden), `tools` (hidden tools, the skill tool).
 - `glyphs`, `colors` (theme keys, so they follow your theme), `inline` (the summary row's parts), `command` words and `text` replies.
 
 `node chat-inventory/scripts/check-data.mjs` checks that every key in the data is read by the code and every pattern compiles.

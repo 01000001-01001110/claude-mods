@@ -4,8 +4,9 @@
 //! tool call, `@` mentions, `/clear`) and keeps one ledger: the goal, the
 //! to-do list, the connectors (MCP servers) and skills used, the files made,
 //! changed or read, and a count of each tool. Docked beside a fullscreen
-//! transcript or in the desktop side panel it draws each section with a
-//! header that folds it; seated inline above the prompt it draws one summary
+//! transcript or in the desktop side panel it draws the title, then each
+//! section as a bordered card whose title row folds it and carries its count
+//! flush right; seated inline above the prompt it draws one summary
 //! row. Subagents are left out (agent-roster draws them) and files stay a
 //! flat list (atlas maps the code and infrastructure). Wiring only: the rules are in
 //! `tally.ts`, every tunable and line of text in `data/chat-inventory.ts`.
@@ -33,7 +34,7 @@ import {
   touch,
   fill,
 } from './tally'
-import type { Part } from './tally'
+import type { Part, Row } from './tally'
 
 /** The pane's id: the engine keys the pane and its render hook by it, so it is a name, not a tunable. */
 const PANE_ID = 'chat-inventory'
@@ -164,14 +165,6 @@ export const register: Register = on => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const ledger = await ledgerNow($)
     const flipped = await flippedNow($)
-    const cols = Math.max(t.pane.minColumns, e.props.bodyColumns)
-    const runs = (parts: Part[]) =>
-      parts.map(p => (
-        <Text {...(p.color === undefined ? {} : { color: p.color })} {...(p.isDim === true ? { dimColor: true } : {})} {...(p.isBold === true ? { bold: true } : {})}>
-          {p.text}
-        </Text>
-      ))
-
     // Inline above the prompt there is room for a glance, not the list.
     if (e.props.placement === 'inline') {
       return (
@@ -181,23 +174,68 @@ export const register: Register = on => {
       )
     }
 
+    // Rows are cut to the inside of a card: the body less its two border cells and the padding each side.
+    const inner = Math.max(t.pane.minColumns, e.props.bodyColumns) - 2 - 2 * t.pane.cardPaddingX
+    const runs = (parts: Part[]) =>
+      parts.map(p => (
+        <Text
+          {...(p.color === undefined ? {} : { color: p.color })}
+          {...(p.isDim === true ? { dimColor: true } : {})}
+          {...(p.isBold === true ? { weight: 'semibold' as const } : {})}
+          {...(p.isStruck === true ? { strikethrough: true } : {})}
+        >
+          {p.text}
+        </Text>
+      ))
+    // A row with an aside is two boxes: the words take the room and are cut, the aside keeps its width at the right edge.
+    const line = (row: Row) =>
+      row.aside === undefined ? (
+        <Text wrap={row.isWrapped === true ? 'wrap' : 'truncate-end'}>{runs(row.parts)}</Text>
+      ) : (
+        <Box key={row.key} flexDirection="row" justifyContent="space-between">
+          <Box flexGrow={1} overflow="hidden">
+            <Text wrap="truncate-end">{runs(row.parts)}</Text>
+          </Box>
+          <Box flexShrink={0} marginLeft={1}>
+            <Text tabular>{runs(row.aside)}</Text>
+          </Box>
+        </Box>
+      )
+
     return (
       <Box flexDirection="column" gap={t.pane.sectionGap}>
-        {sectionViews(ledger, cols, t).map(view => {
+        {t.pane.showTitle && (
+          <Text size="heading" weight="semibold" color={t.colors.title}>
+            {t.pane.title}
+          </Text>
+        )}
+        {sectionViews(ledger, inner, t).map(view => {
           const spec = t.sections.find(s => s.id === view.id)
           const open = spec !== undefined && isOpen(spec, flipped)
           return (
-            <Box key={`section-${view.id}`} flexDirection="column">
-              <Button key={`fold-${view.id}`} plain onPress={() => flipSection($, view.id)}>
-                <Text color={t.colors.heading} bold>
-                  {`${open ? t.glyphs.open : t.glyphs.closed} ${view.heading}`}
-                </Text>
-              </Button>
+            <Box
+              key={`section-${view.id}`}
+              flexDirection="column"
+              borderStyle={t.pane.cardBorder}
+              borderColor={t.colors.border}
+              paddingX={t.pane.cardPaddingX}
+            >
+              <Box flexDirection="row" justifyContent="space-between">
+                <Button key={`fold-${view.id}`} plain onPress={() => flipSection($, view.id)}>
+                  <Text color={t.colors.heading} weight="semibold">
+                    {`${open ? t.glyphs.open : t.glyphs.closed} ${view.title}`}
+                  </Text>
+                </Button>
+                {view.badge !== '' && (
+                  <Box flexShrink={0} marginLeft={1}>
+                    <Text color={t.colors.badge} tabular>
+                      {view.badge}
+                    </Text>
+                  </Box>
+                )}
+              </Box>
               {open && view.isEmpty && spec !== undefined && <Text dimColor>{spec.empty}</Text>}
-              {open &&
-                view.rows.map(row => (
-                  <Text wrap={row.isWrapped === true ? 'wrap' : 'truncate-end'}>{runs(row.parts)}</Text>
-                ))}
+              {open && view.rows.map(line)}
             </Box>
           )
         })}

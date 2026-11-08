@@ -1,6 +1,6 @@
 {
   "name": "chat-inventory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An \"In this chat\" pane like Cowork's side panel: goal, to-do progress, connectors and skills used, files made, changed or read, and tool counts, each section foldable (/inventory)",
   "types": "./types/index.d.ts",
   "author": {

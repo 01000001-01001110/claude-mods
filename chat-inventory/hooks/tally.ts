@@ -12,19 +12,26 @@ export interface Part {
   color?: Paint
   isDim?: boolean
   isBold?: boolean
+  isStruck?: boolean
 }
 
-/** One drawn row. `isWrapped` rows may take several lines (the goal); the rest are cut to one. */
+/**
+ * One drawn row. `parts` read from the left; `aside` (a count, a percentage)
+ * sits flush right. `isWrapped` rows may take several lines (the goal); the
+ * rest are cut to one.
+ */
 export interface Row {
   key: string
   parts: Part[]
+  aside?: Part[]
   isWrapped?: boolean
 }
 
-/** A section ready to draw: its header text, whether it has anything, and its rows. */
+/** A section ready to draw: its card title, the count beside it, whether it has anything, and its rows. */
 export interface SectionView {
   id: SectionId
-  heading: string
+  title: string
+  badge: string
   isEmpty: boolean
   rows: Row[]
 }
@@ -244,52 +251,82 @@ function capped(rows: Row[], limit: number, id: SectionId, t: Tuning): Row[] {
   return [...rows.slice(0, limit), { key: `${id}-more`, parts: [{ text: fill(t.text.more, { n: hidden }), isDim: true }] }]
 }
 
-/** A `glyph name ×n` row for a tally. */
+/** A `glyph name` row for a tally, its `×n` flush right. */
 function tallyRow(id: SectionId, glyph: string, x: Tally, cols: number, t: Tuning): Row {
-  const tail = ` ${t.glyphs.count}${x.uses}`
-  const room = cols - glyph.length - 1 - tail.length
+  const tail = `${t.glyphs.count}${x.uses}`
+  // One cell between the name and the count, which the row's layout keeps.
+  const room = cols - glyph.length - 1 - tail.length - 1
   return {
     key: `${id}-${x.name}`,
-    parts: [{ text: `${glyph} ${cutEnd(x.name, room, t.glyphs.ellipsis)}` }, { text: tail, color: t.colors.count }],
+    parts: [{ text: `${glyph} ${cutEnd(x.name, room, t.glyphs.ellipsis)}` }],
+    aside: [{ text: tail, color: t.colors.count }],
   }
 }
 
-/** The rows of one section's body, at `cols` cells wide. */
+/** A path split at its last slash: the folder (empty at the top) and the name. */
+export function splitPath(path: string): { folder: string; name: string } {
+  const cut = path.lastIndexOf('/')
+  return cut < 0 ? { folder: '', name: path } : { folder: path.slice(0, cut), name: path.slice(cut + 1) }
+}
+
+/**
+ * A file row: its kind mark, its name, then its folder dimmed. The name keeps
+ * the room it needs; the folder takes what is left, cut from the front so the
+ * nearest folder stays, and is left out when less than `minFolderColumns` is left.
+ */
+function fileRow(f: FileEntry, root: string, cols: number, t: Tuning): Row {
+  const g = t.glyphs
+  const mark = g.file[f.kind]
+  const { folder, name } = splitPath(shownPath(f.path, root))
+  const room = cols - mark.length - 1
+  const shown = cutFront(name, room, g.ellipsis)
+  // Two cells between name and folder, so the folder reads as a note on the name.
+  const left = room - shown.length - 2
+  const parts: Part[] = [
+    { text: mark, color: t.colors.file[f.kind] },
+    { text: ` ${shown}`, ...(f.kind === 'read' ? { isDim: true } : { isBold: true }) },
+  ]
+  if (folder !== '' && left >= t.files.minFolderColumns) parts.push({ text: `  ${cutFront(folder, left, g.ellipsis)}`, color: t.colors.folder })
+  return { key: `files-${f.path}`, parts }
+}
+
+/** The to-do bar row: the bar, its percentage flush right. */
+function barRow(done: number, total: number, cols: number, t: Tuning): Row {
+  const pct = fill(t.text.percent, { pct: total <= 0 ? 0 : Math.round((done / total) * 100) })
+  // The widest percentage ('100%') is reserved so the bar does not jump as it fills.
+  const widest = fill(t.text.percent, { pct: 100 }).length
+  const width = Math.min(t.todo.barWidth, cols - widest - 1)
+  return { key: 'todo-bar', parts: [{ text: bar(done, total, width, t), color: t.colors.bar }], aside: [{ text: pct, color: t.colors.count }] }
+}
+
+/** The rows of one section's body, at `cols` cells wide (the inside of its card). */
 export function bodyRows(id: SectionId, l: Ledger, cols: number, t: Tuning): Row[] {
   const g = t.glyphs
   if (id === 'goal') return l.goal === '' ? [] : [{ key: 'goal-text', parts: [{ text: l.goal }], isWrapped: true }]
   if (id === 'todo') {
     if (l.todos.length === 0) return []
     const c = counts(l).todo
-    const head: Row = { key: 'todo-bar', parts: [{ text: bar(c.done, c.total, Math.min(t.todo.barWidth, cols), t), color: t.colors.bar }] }
-    const items = l.todos.map(x => ({
-      key: `todo-${x.id}`,
-      parts: [{ text: `${g.todo[x.state]} ${cutEnd(x.text, cols - g.todo[x.state].length - 1, g.ellipsis)}`, color: t.colors.todo[x.state], ...(x.state === 'doing' ? { isBold: true } : {}) }],
-    }))
-    return [head, ...items]
+    const items = l.todos.map(x => {
+      const look: Part = { text: '', color: t.colors.todo[x.state] }
+      if (x.state === 'doing') look.isBold = true
+      if (x.state === 'done' && t.todo.strikeDone) look.isStruck = true
+      const glyph = g.todo[x.state]
+      return {
+        key: `todo-${x.id}`,
+        parts: [
+          { text: glyph, color: t.colors.todo[x.state] },
+          { ...look, text: ` ${cutEnd(x.text, cols - glyph.length - 1, g.ellipsis)}` },
+        ],
+      }
+    })
+    return [barRow(c.done, c.total, cols, t), ...items]
   }
   if (id === 'connectors') return byUse(l.connectors).map(x => tallyRow(id, g.connector, x, cols, t))
   if (id === 'skills') return byUse(l.skills).map(x => tallyRow(id, g.skill, x, cols, t))
   if (id === 'files') {
-    return [...l.files]
-      .sort((a, b) => b.last - a.last)
-      .map(f => {
-        const mark = g.file[f.kind]
-        return {
-          key: `files-${f.path}`,
-          parts: [
-            { text: mark, color: t.colors.file[f.kind] },
-            { text: ` ${cutFront(shownPath(f.path, l.root), cols - mark.length - 1, g.ellipsis)}`, ...(f.kind === 'read' ? { isDim: true } : {}) },
-          ],
-        }
-      })
+    return [...l.files].sort((a, b) => b.last - a.last).map(f => fileRow(f, l.root, cols, t))
   }
-  // Tools: one wrapped line, the way a glance reads it.
-  if (l.tools.length === 0) return []
-  const line = byUse(l.tools)
-    .map(x => `${x.name} ${g.count}${x.uses}`)
-    .join(g.separator)
-  return [{ key: 'tools-line', parts: [{ text: line, color: t.colors.count }], isWrapped: true }]
+  return byUse(l.tools).map(x => tallyRow(id, g.tool, x, cols, t))
 }
 
 /** Every section the pane draws, in data order, with the ones hidden while empty left out. */
@@ -298,7 +335,13 @@ export function sectionViews(l: Ledger, cols: number, t: Tuning): SectionView[] 
   return t.sections
     .map(spec => {
       const rows = bodyRows(spec.id, l, cols, t)
-      return { id: spec.id, heading: fill(spec.heading, c[spec.id]), isEmpty: rows.length === 0, rows: capped(rows, spec.rows, spec.id, t) }
+      return {
+        id: spec.id,
+        title: spec.heading,
+        badge: rows.length === 0 && spec.badge.includes('{') ? '' : fill(spec.badge, c[spec.id]),
+        isEmpty: rows.length === 0,
+        rows: capped(rows, spec.rows, spec.id, t),
+      }
     })
     .filter((v, i) => !(v.isEmpty && (t.sections[i] as SectionSpec).hideWhenEmpty))
 }
