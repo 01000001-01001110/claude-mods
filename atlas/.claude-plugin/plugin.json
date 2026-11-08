@@ -1,0 +1,8 @@
+{
+  "name": "atlas",
+  "version": "0.1.0",
+  "description": "Map the repo you are in: what it needs to run and what is missing (gaps with file:line first), then its modules, how they depend, entry points, hot spots and cycles. /atlas opens the pane; export to Markdown with mermaid and HTML.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

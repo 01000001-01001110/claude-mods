@@ -1,0 +1,8 @@
+{
+  "name": "human-gate",
+  "version": "0.1.0",
+  "description": "Holds irreversible tool calls (deploys, publishes, protected pushes, money, outbound messages, destructive SQL) for a person; lets read-only calls through.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

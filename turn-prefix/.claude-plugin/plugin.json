@@ -1,0 +1,10 @@
+{
+  "name": "turn-prefix",
+  "version": "0.1.0",
+  "description": "Start a prompt with _ to run that turn on Haiku, or + to think at max effort; shown while typing, while it runs and under the answer",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Alan Newingham"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "effort-picker",
+  "version": "0.1.0",
+  "description": "Reads the prompt as you type and suggests a model and effort above it, with the reason and a re-cache marker; Use applies it to the next turn only",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Alan Newingham"
+  },
+  "license": "MIT"
+}

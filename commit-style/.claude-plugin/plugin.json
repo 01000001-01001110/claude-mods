@@ -1,0 +1,8 @@
+{
+  "name": "commit-style",
+  "version": "0.1.0",
+  "description": "Tells the model to write Conventional Commits: typed, imperative, short summaries, no AI attribution.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

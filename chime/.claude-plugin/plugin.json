@@ -1,0 +1,10 @@
+{
+  "name": "chime",
+  "version": "0.1.0",
+  "description": "Plays a voice pack's sounds when Claude finishes, fails, needs you, compacts or starts; our own take on peon-ping",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Alan Newingham"
+  },
+  "license": "MIT"
+}

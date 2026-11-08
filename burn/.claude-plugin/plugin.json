@@ -1,0 +1,8 @@
+{
+  "name": "burn",
+  "version": "0.1.0",
+  "description": "Session and weekly usage gauges under the prompt, cost and burn rate, a runs-out-at forecast and usage history; nudges you to spend the weekly limit before it resets, or to ease off when burning too fast.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

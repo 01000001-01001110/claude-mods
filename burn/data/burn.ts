@@ -1,0 +1,205 @@
+//! burn tuning: tiers, slow-down and forecast rules, the ledger, history and
+//! export settings, timings, colors, glyphs, number formats and every line of
+//! text. A plain TypeScript literal (a hooks module can only import script
+//! files); the type checker holds it to `Tuning`, and the tests import this
+//! same file. Prices live beside it in `data/prices.ts`.
+
+import type { Tuning } from '../types'
+
+const HOUR = 3_600_000
+const MINUTE = 60_000
+
+export const tuning: Tuning = {
+  windows: {
+    five_hour: { label: 'session', lengthMs: 5 * HOUR },
+    seven_day: { label: 'week', lengthMs: 7 * 24 * HOUR },
+  },
+  order: ['five_hour', 'seven_day'],
+  tiers: [
+    {
+      id: 'inferno',
+      withinMs: 10 * HOUR,
+      everyMs: 30 * MINUTE,
+      minLeftPercent: 5,
+      flames: 3,
+      color: 'error',
+      quotes: [
+        '{left}% of the week left and {reset} on the clock. It all vanishes at the reset.',
+        'Last call. {left}% of your week evaporates in {reset}.',
+        'The meter resets in {reset}. Unused tokens go nowhere. Spend them.',
+        'You have {left}% left. That refactor you keep putting off? Now.',
+        '{reset} to go. Hand Claude the hardest ticket on the board.',
+        'Final hours. {left}% left, and none of it carries over.',
+        'Burn it down: {left}% left, {reset} to the reset.',
+        'Write the tests you skipped. {left}% says you can afford it.',
+      ],
+    },
+    {
+      id: 'blaze',
+      withinMs: 24 * HOUR,
+      everyMs: 2 * HOUR,
+      minLeftPercent: 15,
+      flames: 2,
+      color: 'claude',
+      quotes: [
+        'A day to the reset and {left}% unspent.',
+        '{left}% of the week left. Point Claude at the backlog.',
+        'Reset in {reset}. That audit you meant to run? Run it.',
+        'Tokens do not roll over. {left}% is waiting.',
+        'Pick the gnarliest bug you have. {left}% says go.',
+        'Docs, tests, cleanup: {left}% left, {reset} to use it.',
+        'Plenty in the tank: {left}% left before the reset in {reset}.',
+        'Turn {left}% into a pull request before {reset} runs out.',
+      ],
+    },
+    {
+      id: 'smoulder',
+      withinMs: 72 * HOUR,
+      everyMs: 6 * HOUR,
+      minLeftPercent: 25,
+      flames: 1,
+      color: 'warning',
+      quotes: [
+        'Three days or so to the reset, and {left}% still unspent.',
+        '{left}% of the week left. Worth planning something big.',
+        'The week resets in {reset}. You have {left}% to work with.',
+        'Quiet week? {left}% left. Queue up a project.',
+        'A gentle nudge: {left}% unspent, reset in {reset}.',
+        'Room for a spike: {left}% left this week.',
+        'Have Claude review the module nobody wants to touch. {left}% left.',
+        '{reset} until the reset. {left}% is yours to use.',
+      ],
+    },
+  ],
+  slow: {
+    five_hour: { minUsedPercent: 50, pace: 1.5 },
+    seven_day: { minUsedPercent: 40, pace: 1.5 },
+  },
+  slowGapMs: 30 * MINUTE,
+  slowQuotes: [
+    'Easy now. {used}% of the {label} gone, {reset} until it resets.',
+    'Slow down: {used}% of the {label} used and {reset} still to go.',
+    '{used}% of the {label} already. At this pace it runs dry early.',
+    'Pace yourself. {used}% of the {label} with {reset} on the clock.',
+    'Breathe. {used}% of the {label} spent, reset in {reset}.',
+    'Heavy burn: {used}% of the {label} gone. Maybe batch the next asks.',
+    '{used}% of the {label} used. Stretch your legs; it resets in {reset}.',
+    'Whoa. {used}% of the {label} with {reset} left. Ease off a bit.',
+  ],
+  forecast: {
+    minUsedPercent: { five_hour: 25, seven_day: 20 },
+    minLeadMs: 15 * MINUTE,
+    gapMs: 30 * MINUTE,
+    quotes: [
+      'At this rate the {label} runs out at {at}, before it resets in {reset}.',
+      '{used}% of the {label} used. On this pace it is gone by {at}.',
+      'Heads up: the {label} runs dry around {at}; the reset is {reset} away.',
+      'The {label} will not last to the reset. Out at about {at}.',
+    ],
+  },
+  ledger: {
+    // Seen in Claude Code's own session logs (2026-11-07): the main loop writes the
+    // prompt cache for one hour (ephemeral_1h_input_tokens), subagents for five
+    // minutes (ephemeral_5m_input_tokens only).
+    turnCacheWrite: { main: '1h', agent: '5m' },
+    minSpanMs: MINUTE,
+    shareCells: 20,
+    velocity: [
+      { belowTpm: 1_000, label: 'idle' },
+      { belowTpm: 10_000, label: 'steady' },
+      { belowTpm: 50_000, label: 'busy' },
+      { belowTpm: null, label: 'roaring' },
+    ],
+    families: [
+      { id: 'fable', label: 'fable', pattern: String.raw`fable|mythos`, glyph: '█' },
+      { id: 'opus', label: 'opus', pattern: String.raw`opus`, glyph: '▓' },
+      { id: 'sonnet', label: 'sonnet', pattern: String.raw`sonnet`, glyph: '▒' },
+      { id: 'haiku', label: 'haiku', pattern: String.raw`haiku`, glyph: '░' },
+    ],
+    otherFamily: { id: 'other', label: 'other', glyph: '·' },
+  },
+  history: {
+    node: 'node',
+    script: 'scripts/history.mjs',
+    // 14 days of logs took 15.5 s on a 1,200-file history (2026-11-07); months read far more.
+    timeoutMs: 300_000,
+    rows: { day: 14, month: 6 },
+    configEnv: 'CLAUDE_CONFIG_DIR',
+    configDefault: '.claude',
+    projectsDir: 'projects',
+  },
+  export: { path: '{home}/.claude/burn/export.json', schema: 1 },
+  tickMs: MINUTE,
+  toastMs: 4_000,
+  colors: { calm: 'inactive', slow: 'suggestion', label: 'subtle', rate: 'subtle', forecast: 'warning' },
+  row: { gap: 2, showRate: true, showForecast: true },
+  bar: { cells: 8, full: '▰', empty: '▱' },
+  glyphs: { flame: '🔥', slow: '🧯', reset: '↻', separator: '·', forecast: '⌛' },
+  time: {
+    days: '{d}d {h}h',
+    hours: '{h}h {m}m',
+    minutes: '{m}m',
+    unknown: '?',
+    today: '{hh}:{mm}',
+    otherDay: '{day} {hh}:{mm}',
+    dayNames: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+  },
+  units: {
+    currency: '$',
+    wideAbove: 1,
+    wideDecimals: 2,
+    fineDecimals: 4,
+    tokens: [
+      { atLeast: 1_000_000_000, suffix: 'B', decimals: 1 },
+      { atLeast: 1_000_000, suffix: 'M', decimals: 1 },
+      { atLeast: 1_000, suffix: 'k', decimals: 1 },
+    ],
+  },
+  command: {
+    description: 'Usage gauges, burn rate and forecast: /burn [detail | history day|month | export [path]]',
+    detail: 'detail',
+    history: 'history',
+    export: 'export',
+    day: 'day',
+    month: 'month',
+  },
+  text: {
+    noReading: 'No usage reading yet. It arrives with Claude’s first reply.',
+    noWeeklyLimit: 'This account reports no weekly limit, so there is nothing to burn.',
+    calm: 'All calm. {sessionUsed}% of the session and {weekUsed}% of the week used.',
+    slowLine: '{slow} {used}% of the {label} gone {separator} resets in {reset}',
+    burnLine: '{flames} {left}% of the week left {separator} resets in {reset}',
+    windowPart: '{label} {gauge} {used}% {reset} {countdown}',
+    ratePart: '{tokens} tok/min {separator} {usd}/min',
+    forecastPart: '{glyph} out {at}',
+    usage: 'Usage: /burn, /burn detail, /burn history day|month, /burn export [path]',
+    detail: {
+      cost: 'Cost (API list price): {session} this session {separator} {window} this {label} window',
+      engineCost: 'Claude Code’s own ledger says {usd} for this session.',
+      noEngineCost: 'Claude Code reports no cost for this session.',
+      tokens: 'Tokens: {total} in {turns} turns {separator} input {input} {separator} output {output} {separator} cache read {cacheRead} {separator} cache write {cacheWrite}',
+      rate: 'Rate this {label} window: {tokens} tok/min {separator} {usd}/min ({velocity})',
+      noRate: 'Rate: no turns yet this window.',
+      models: 'Models: {bar}  {parts}',
+      modelPart: '{glyph} {label} {share}%',
+      noModels: 'Models: none yet.',
+      forecast: '{glyph} The {label} runs out at {at}, before its reset at {resetAt}.',
+      lasts: 'The {label} lasts to its reset at this pace.',
+      hit: 'The {label} is used up; it resets in {reset}.',
+      context: 'Context: {percent}% of {window} tokens.',
+      noContext: 'Context: no reading yet.',
+      unpriced: 'Not in the price table (counted at $0): {models}.',
+    },
+    history: {
+      head: 'Usage by {period}, priced at API list price (checked {checked}):',
+      row: '{bucket}  {tokens} tokens  {usd}  {top}',
+      total: 'Total: {tokens} tokens, {usd}, {requests} requests from {files} log files.',
+      empty: 'No usage found in the session logs for this period.',
+      failed: 'Could not read the session logs: {reason}',
+      note: 'Unpriced models (counted at $0): {models}.',
+    },
+    exported: 'Wrote the usage snapshot to {path}.',
+    exportFailed: 'Could not write {path}: {reason}',
+    noHome: 'No HOME or USERPROFILE is set; give a path: /burn export <path>.',
+  },
+}

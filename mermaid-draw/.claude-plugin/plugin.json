@@ -1,0 +1,10 @@
+{
+  "name": "mermaid-draw",
+  "version": "0.1.0",
+  "description": "Draws ```mermaid fences in assistant replies as box-drawing diagrams in the terminal transcript (flowcharts and sequence diagrams)",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Alan Newingham"
+  },
+  "license": "MIT"
+}

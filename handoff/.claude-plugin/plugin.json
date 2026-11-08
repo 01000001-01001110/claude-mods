@@ -1,0 +1,8 @@
+{
+  "name": "handoff",
+  "version": "0.1.0",
+  "description": "Moves the work to a fresh chat: offers a handoff past a token threshold or when the prompt cache goes cold, writes it through a fork of the session, saves it under ~/.claude/handoffs, and clears only when you confirm, leaving the handoff in the prompt box.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

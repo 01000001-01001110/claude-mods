@@ -1,0 +1,104 @@
+{
+  "name": "claude-mods",
+  "description": "Alan Newingham's Claude Code mods: panes, bands, sounds and commands, each one data first and tested.",
+  "owner": {
+    "name": "Alan Newingham"
+  },
+  "plugins": [
+    {
+      "name": "agent-roster",
+      "source": "./agent-roster",
+      "description": "A live agent dashboard (/roster): main loop with task and steps, architect, permission gate, agents stacked as cards then swimlanes, loops, turn receipt and session log; a helper desk view with a to-do bar and per-agent tool calls and token shares; an office view of pixel avatars typing at their desks, with a card on hover."
+    },
+    {
+      "name": "atlas",
+      "source": "./atlas",
+      "description": "Map the repo you are in: what it needs to run and what is missing (gaps with file:line first), then its modules, how they depend, entry points, hot spots and cycles. /atlas opens the pane; export to Markdown with mermaid and HTML."
+    },
+    {
+      "name": "brain-dump",
+      "source": "./brain-dump",
+      "description": "Catches a long or rambling prompt, asks a few clarifying questions, and puts a structured rewrite (Task / Why / Guardrails / Done looks like) in the prompt box for you to review and send"
+    },
+    {
+      "name": "burn",
+      "source": "./burn",
+      "description": "Session and weekly usage gauges under the prompt, cost and burn rate, a runs-out-at forecast and usage history; nudges you to spend the weekly limit before it resets, or to ease off when burning too fast."
+    },
+    {
+      "name": "chat-inventory",
+      "source": "./chat-inventory",
+      "description": "An In this chat pane like Cowork's side panel: goal, to-do progress, connectors and skills used, files made, changed or read, and tool counts, each section foldable"
+    },
+    {
+      "name": "chime",
+      "source": "./chime",
+      "description": "Plays a voice pack's sounds when Claude finishes, fails, needs you, compacts or starts; our own take on peon-ping"
+    },
+    {
+      "name": "commit-style",
+      "source": "./commit-style",
+      "description": "Tells the model to write Conventional Commits: typed, imperative, short summaries, no AI attribution."
+    },
+    {
+      "name": "context-meter",
+      "source": "./context-meter",
+      "description": "Context usage meter above the prompt: raw and usable fill with the autocompact mark, turns-to-autocompact forecast, prompt-cache countdown and miss detection, files changed on disk since read, compactions, and a FRESH/AGING/STALE/COLD verdict."
+    },
+    {
+      "name": "diff-review",
+      "source": "./diff-review",
+      "description": "Walk through the agent's edits hunk by hunk and keep or undo each one, then replay them by turn or file with Play/Pause, denied and failed calls included."
+    },
+    {
+      "name": "effort-picker",
+      "source": "./effort-picker",
+      "description": "Suggests a model and effort for the prompt you are typing, with the reason and a re-caches marker; Use applies it to the next turn only"
+    },
+    {
+      "name": "handoff",
+      "source": "./handoff",
+      "description": "Moves the work to a fresh chat: offers a handoff past a token threshold or when the prompt cache goes cold, writes it through a fork of the session, saves it under ~/.claude/handoffs, and clears only when you confirm, leaving the handoff in the prompt box."
+    },
+    {
+      "name": "human-gate",
+      "source": "./human-gate",
+      "description": "Holds irreversible tool calls (deploys, publishes, protected pushes, money, outbound messages, destructive SQL) for a person; lets read-only calls through."
+    },
+    {
+      "name": "mermaid-draw",
+      "source": "./mermaid-draw",
+      "description": "Draws ```mermaid fences in assistant replies as box-drawing diagrams in the terminal transcript (flowcharts and sequence diagrams)"
+    },
+    {
+      "name": "modernize",
+      "source": "./modernize",
+      "description": "Understand and prove a legacy code modernization: intent, assessment, map, business rules with checked citations, a brief to approve, status, and a scripted PROVEN / PARTLY PROVEN / NOT PROVEN verdict"
+    },
+    {
+      "name": "pet",
+      "source": "./pet",
+      "description": "A virtual pet above the prompt that grows from Claude's real work: tests, commits and edits."
+    },
+    {
+      "name": "rubber-duck",
+      "source": "./rubber-duck",
+      "description": "A side-panel chat with a model you pick: talk through the project, or anything else."
+    },
+    {
+      "name": "screen-share",
+      "source": "./screen-share",
+      "description": "Screen share mode: masks keys, tokens, env values, user paths, emails, phone numbers, money and names on screen while you present or stream, with an ON AIR mark"
+    },
+    {
+      "name": "switchboard",
+      "source": "./switchboard",
+      "description": "A /switchboard pane with one card per mod: what is true now, what changes at next load, and whether new panes are blocked; search, filter, keyboard, and a locked view when the switch file is broken."
+    },
+    {
+      "name": "turn-prefix",
+      "source": "./turn-prefix",
+      "description": "Start a prompt with _ to run that turn on Haiku, or + to think at max effort; shown while typing, while it runs and under the answer"
+    }
+  ]
+}

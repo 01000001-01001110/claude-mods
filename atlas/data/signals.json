@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "about": "What atlas looks for. Read by scripts/scan.mjs (every list) and by the hooks (keyFiles, for staleness). Regexes are JavaScript source strings; the first group is the captured name.",
+  "skipDirs": ["node_modules", ".git", "target", "bin", "obj", "dist", "build", "out", ".next", ".nuxt", "vendor", "__pycache__", ".venv", "venv", ".terraform", ".claude", "coverage"],
+  "maxFileBytes": 400000,
+  "sourceExtensions": {
+    "js": [".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"],
+    "rust": [".rs"],
+    "csharp": [".cs"],
+    "python": [".py"],
+    "go": [".go"]
+  },
+  "keyFiles": [
+    "package.json", "Cargo.toml", "*.csproj", "go.mod", "pyproject.toml", "requirements*.txt",
+    "compose*.yml", "compose*.yaml", "docker-compose*.yml", "docker-compose*.yaml",
+    ".env", ".env.*", "*.tf", "*.tfstate", "Dockerfile", "Dockerfile.*", "Procfile", "fly.toml", "vercel.json",
+    "wrangler.toml", "serverless.yml", "schema.prisma", "plugin.json"
+  ],
+  "envFiles": {
+    "pattern": "^\\.env(\\..+)?$",
+    "examples": ["^\\.env\\.(example|sample|template|dist)$"]
+  },
+  "envReads": {
+    "js": [
+      "process\\.env\\.([A-Z_][A-Z0-9_]*)",
+      "process\\.env\\[\\s*['\"`]([A-Za-z_][A-Za-z0-9_]*)['\"`]\\s*\\]",
+      "import\\.meta\\.env\\.([A-Z_][A-Z0-9_]*)",
+      "Deno\\.env\\.get\\(\\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
+    ],
+    "rust": [
+      "env::var(?:_os)?\\(\\s*\"([A-Za-z_][A-Za-z0-9_]*)\"",
+      "(?:option_)?env!\\(\\s*\"([A-Za-z_][A-Za-z0-9_]*)\""
+    ],
+    "csharp": [
+      "Environment\\.GetEnvironmentVariable\\(\\s*\"([A-Za-z_][A-Za-z0-9_]*)\"",
+      "Configuration\\[\\s*\"([A-Z_][A-Z0-9_]*)\"\\s*\\]"
+    ],
+    "python": [
+      "os\\.(?:getenv|environ\\.get)\\(\\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]",
+      "os\\.environ\\[\\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\\s*\\]"
+    ],
+    "go": [
+      "os\\.(?:Getenv|LookupEnv)\\(\\s*\"([A-Za-z_][A-Za-z0-9_]*)\""
+    ]
+  },
+  "envFallback": {
+    "after": {
+      "js": "^\\s*(?:\\?\\?|\\|\\|)",
+      "python": "^\\s*,",
+      "rust": "^\\s*\\)\\s*\\.(?:unwrap_or|ok\\(\\)|is_ok|is_err)",
+      "csharp": "^\\s*\\)\\s*\\?\\?"
+    },
+    "before": {
+      "js": "(?:\\?\\?|\\|\\|)\\s*$",
+      "csharp": "\\?\\?\\s*$"
+    }
+  },
+  "envDefines": {
+    "js": {
+      "assign": [
+        "process\\.env\\.([A-Z_][A-Z0-9_]*)\\s*=(?!=)",
+        "process\\.env\\[\\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\\s*\\]\\s*=(?!=)"
+      ],
+      "block": "\\benv\\s*:\\s*\\{([^}]*)\\}",
+      "key": "(?:^|[,{\\s])([A-Z_][A-Z0-9_]*)\\s*:"
+    },
+    "python": {
+      "assign": ["os\\.environ\\[\\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\\s*\\]\\s*=(?!=)"]
+    }
+  },
+  "testFiles": ["\\.(test|spec)\\.[a-z]+$", "(^|/)(tests?|__tests__|spec)/", "_test\\.(go|py)$", "(^|/)test_[^/]+\\.py$", "Tests?\\.cs$"],
+  "envIgnore": ["NODE_ENV", "HOME", "PATH", "USER", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "TMPDIR", "SHELL", "PWD", "CI", "DEBUG", "TERM", "LANG", "HOSTNAME", "COMPUTERNAME", "CARGO_MANIFEST_DIR", "CARGO_PKG_VERSION", "CARGO_PKG_NAME", "GITHUB_TOKEN", "GITHUB_ACTIONS", "RUST_LOG", "RUST_BACKTRACE"],
+  "imports": {
+    "js": [
+      "(?:^|[^.\\w])import\\s[^'\"`]*?from\\s*['\"]([^'\"]+)['\"]",
+      "(?:^|[^.\\w])import\\s*['\"]([^'\"]+)['\"]",
+      "(?:^|[^.\\w])export\\s[^'\"`]*?from\\s*['\"]([^'\"]+)['\"]",
+      "\\brequire\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)",
+      "\\bimport\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)"
+    ],
+    "rust": [
+      "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?mod\\s+([a-z_][a-z0-9_]*)\\s*;",
+      "\\bcrate::([a-z_][a-z0-9_]*)"
+    ],
+    "python": [
+      "^\\s*from\\s+(\\.+[\\w.]*)\\s+import",
+      "^\\s*from\\s+([A-Za-z_][\\w.]*)\\s+import",
+      "^\\s*import\\s+([A-Za-z_][\\w.]*)"
+    ],
+    "go": [
+      "^\\s*(?:import\\s+)?(?:[\\w.]+\\s+)?\"([^\"]+)\"\\s*$"
+    ],
+    "csharpTypes": "\\b(?:class|record|struct|interface|enum)\\s+([A-Z][A-Za-z0-9_]*)"
+  },
+  "jsResolve": ["", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".mts", "/index.ts", "/index.tsx", "/index.js", "/index.mjs"],
+  "fileRefs": {
+    "pattern": "['\"`/]([\\w.-]+(?:/[\\w.-]+)*\\.(?:json|jsonl|csv|yaml|yml|toml|db|sqlite|sqlite3|xml))['\"`]",
+    "skipBasenames": ["package.json", "tsconfig.json", "plugin.json", "hooks.json", "marketplace.json", "Cargo.toml", "package-lock.json"]
+  },
+  "entries": [
+    { "file": "^(?:.*/)?src/main\\.rs$", "kind": "main.rs" },
+    { "file": "^(?:.*/)?src/bin/[^/]+\\.rs$", "kind": "bin" },
+    { "file": "^(?:.*/)?Program\\.cs$", "kind": "Program.cs" },
+    { "file": "^(?:.*/)?__main__\\.py$", "kind": "__main__" },
+    { "file": "^(?:.*/)?manage\\.py$", "kind": "manage.py" },
+    { "file": "^(?:.*/)?main\\.go$", "kind": "main.go" },
+    { "file": "^(?:.*/)?\\.claude-plugin/plugin\\.json$", "kind": "Claude Code plugin" },
+    { "file": "^(?:.*/)?hooks/register\\.tsx?$", "kind": "hooks module" }
+  ],
+  "entryLines": [
+    { "pattern": "\\.listen\\(\\s*(?:process\\.env\\.[A-Z_]+\\s*\\|\\|\\s*)?(\\d{2,5})?", "kind": "server listen", "langs": ["js"] },
+    { "pattern": "#\\[(?:tokio|actix_web|async_std)::main\\]", "kind": "async main", "langs": ["rust"] },
+    { "pattern": "static\\s+(?:async\\s+)?(?:Task\\s+|void\\s+|int\\s+)Main\\s*\\(", "kind": "Main", "langs": ["csharp"] },
+    { "pattern": "if\\s+__name__\\s*==\\s*['\"]__main__['\"]", "kind": "__main__", "langs": ["python"] }
+  ],
+  "services": [
+    {
+      "id": "postgres", "name": "Postgres", "kind": "resource",
+      "packages": { "npm": ["pg", "postgres", "pg-promise", "@neondatabase/serverless", "@vercel/postgres"], "cargo": ["tokio-postgres", "postgres", "sqlx:postgres", "diesel:postgres", "sea-orm:postgres"], "pypi": ["psycopg", "psycopg2", "psycopg2-binary", "asyncpg"], "nuget": ["Npgsql", "Npgsql.EntityFrameworkCore.PostgreSQL"], "go": ["github.com/lib/pq", "github.com/jackc/pgx"] },
+      "schemes": ["postgres", "postgresql"],
+      "prisma": ["postgresql", "postgres"],
+      "env": ["^POSTGRES_", "^PG(HOST|USER|PASSWORD|DATABASE|PORT)$"],
+      "attachEnv": ["DATABASE_URL"],
+      "images": ["postgres", "postgis/postgis", "bitnami/postgresql", "timescale/timescaledb"],
+      "terraform": ["^aws_db_instance$", "^aws_rds_cluster$", "^google_sql_database_instance$", "^azurerm_postgresql_", "^neon_project$"]
+    },
+    {
+      "id": "mysql", "name": "MySQL", "kind": "resource",
+      "packages": { "npm": ["mysql", "mysql2"], "cargo": ["mysql", "mysql_async", "sqlx:mysql"], "pypi": ["mysqlclient", "PyMySQL", "aiomysql"], "nuget": ["MySql.Data", "MySqlConnector", "Pomelo.EntityFrameworkCore.MySql"], "go": ["github.com/go-sql-driver/mysql"] },
+      "schemes": ["mysql"],
+      "prisma": ["mysql"],
+      "env": ["^MYSQL_"],
+      "attachEnv": ["DATABASE_URL"],
+      "images": ["mysql", "mariadb", "bitnami/mysql"],
+      "terraform": ["^aws_db_instance$", "^google_sql_database_instance$", "^azurerm_mysql_"]
+    },
+    {
+      "id": "mongodb", "name": "MongoDB", "kind": "resource",
+      "packages": { "npm": ["mongodb", "mongoose"], "cargo": ["mongodb"], "pypi": ["pymongo", "motor"], "nuget": ["MongoDB.Driver"], "go": ["go.mongodb.org/mongo-driver"] },
+      "schemes": ["mongodb", "mongodb+srv"],
+      "prisma": ["mongodb"],
+      "env": ["^MONGO"],
+      "attachEnv": ["DATABASE_URL"],
+      "images": ["mongo", "bitnami/mongodb"],
+      "terraform": ["^mongodbatlas_cluster$", "^aws_docdb_cluster$"]
+    },
+    {
+      "id": "redis", "name": "Redis", "kind": "resource",
+      "packages": { "npm": ["redis", "ioredis", "@upstash/redis", "bullmq"], "cargo": ["redis", "deadpool-redis"], "pypi": ["redis", "aioredis", "celery"], "nuget": ["StackExchange.Redis"], "go": ["github.com/redis/go-redis", "github.com/go-redis/redis"] },
+      "schemes": ["redis", "rediss"],
+      "prisma": [],
+      "env": ["^REDIS_", "^UPSTASH_REDIS_"],
+      "attachEnv": [],
+      "images": ["redis", "valkey/valkey", "bitnami/redis"],
+      "terraform": ["^aws_elasticache_", "^google_redis_instance$", "^azurerm_redis_cache$"]
+    },
+    {
+      "id": "rabbitmq", "name": "RabbitMQ", "kind": "resource",
+      "packages": { "npm": ["amqplib", "amqp-connection-manager"], "cargo": ["lapin"], "pypi": ["pika", "aio-pika"], "nuget": ["RabbitMQ.Client", "MassTransit.RabbitMQ"], "go": ["github.com/rabbitmq/amqp091-go"] },
+      "schemes": ["amqp", "amqps"],
+      "prisma": [],
+      "env": ["^RABBITMQ_", "^AMQP_"],
+      "attachEnv": [],
+      "images": ["rabbitmq"],
+      "terraform": ["^aws_mq_broker$"]
+    },
+    {
+      "id": "kafka", "name": "Kafka", "kind": "resource",
+      "packages": { "npm": ["kafkajs"], "cargo": ["rdkafka"], "pypi": ["kafka-python", "confluent-kafka"], "nuget": ["Confluent.Kafka"], "go": ["github.com/segmentio/kafka-go"] },
+      "schemes": ["kafka"],
+      "prisma": [],
+      "env": ["^KAFKA_"],
+      "attachEnv": [],
+      "images": ["bitnami/kafka", "confluentinc/cp-kafka", "apache/kafka", "redpandadata/redpanda"],
+      "terraform": ["^aws_msk_cluster$"]
+    },
+    {
+      "id": "s3", "name": "S3 bucket", "kind": "resource",
+      "packages": { "npm": ["@aws-sdk/client-s3", "aws-sdk"], "cargo": ["aws-sdk-s3", "rusoto_s3"], "pypi": ["boto3"], "nuget": ["AWSSDK.S3"], "go": ["github.com/aws/aws-sdk-go-v2/service/s3"] },
+      "schemes": ["s3"],
+      "prisma": [],
+      "env": ["^S3_", "_S3_BUCKET$", "^AWS_S3_"],
+      "attachEnv": [],
+      "images": ["minio/minio", "localstack/localstack"],
+      "terraform": ["^aws_s3_bucket$", "^google_storage_bucket$", "^azurerm_storage_account$", "^cloudflare_r2_bucket$"]
+    },
+    {
+      "id": "elasticsearch", "name": "Elasticsearch", "kind": "resource",
+      "packages": { "npm": ["@elastic/elasticsearch"], "cargo": ["elasticsearch"], "pypi": ["elasticsearch"], "nuget": ["Elastic.Clients.Elasticsearch", "NEST"], "go": ["github.com/elastic/go-elasticsearch"] },
+      "schemes": [],
+      "prisma": [],
+      "env": ["^ELASTIC(SEARCH)?_"],
+      "attachEnv": [],
+      "images": ["elasticsearch", "docker.elastic.co/elasticsearch/elasticsearch", "opensearchproject/opensearch"],
+      "terraform": ["^aws_elasticsearch_domain$", "^aws_opensearch_domain$"]
+    },
+    {
+      "id": "sqlite", "name": "SQLite file", "kind": "file",
+      "packages": { "npm": ["better-sqlite3", "sqlite3"], "cargo": ["rusqlite", "sqlx:sqlite"], "pypi": [], "nuget": ["Microsoft.Data.Sqlite"], "go": ["github.com/mattn/go-sqlite3"] },
+      "schemes": ["sqlite"],
+      "prisma": ["sqlite"],
+      "env": [],
+      "attachEnv": [],
+      "images": [],
+      "terraform": []
+    },
+    {
+      "id": "stripe", "name": "Stripe API", "kind": "api",
+      "packages": { "npm": ["stripe", "@stripe/stripe-js"], "cargo": ["async-stripe", "stripe-rust"], "pypi": ["stripe"], "nuget": ["Stripe.net"], "go": ["github.com/stripe/stripe-go"] },
+      "schemes": [],
+      "prisma": [],
+      "env": ["^STRIPE_"],
+      "attachEnv": [],
+      "images": [],
+      "terraform": []
+    },
+    {
+      "id": "openai", "name": "OpenAI API", "kind": "api",
+      "packages": { "npm": ["openai", "@ai-sdk/openai"], "cargo": ["async-openai"], "pypi": ["openai"], "nuget": ["OpenAI", "Azure.AI.OpenAI"], "go": ["github.com/sashabaranov/go-openai"] },
+      "schemes": [],
+      "prisma": [],
+      "env": ["^OPENAI_"],
+      "attachEnv": [],
+      "images": [],
+      "terraform": []
+    },
+    {
+      "id": "anthropic", "name": "Anthropic API", "kind": "api",
+      "packages": { "npm": ["@anthropic-ai/sdk", "@ai-sdk/anthropic"], "cargo": [], "pypi": ["anthropic"], "nuget": ["Anthropic.SDK"], "go": ["github.com/anthropics/anthropic-sdk-go"] },
+      "schemes": [],
+      "prisma": [],
+      "env": ["^ANTHROPIC_"],
+      "attachEnv": [],
+      "images": [],
+      "terraform": []
+    },
+    {
+      "id": "twilio", "name": "Twilio API", "kind": "api",
+      "packages": { "npm": ["twilio"], "cargo": [], "pypi": ["twilio"], "nuget": ["Twilio"], "go": ["github.com/twilio/twilio-go"] },
+      "schemes": [],
+      "prisma": [],
+      "env": ["^TWILIO_"],
+      "attachEnv": [],
+      "images": [],
+      "terraform": []
+    },
+    {
+      "id": "sendgrid", "name": "SendGrid API", "kind": "api",
+      "packages": { "npm": ["@sendgrid/mail"], "cargo": [], "pypi": ["sendgrid"], "nuget": ["SendGrid"], "go": ["github.com/sendgrid/sendgrid-go"] },
+      "schemes": [],
+      "prisma": [],
+      "env": ["^SENDGRID_"],
+      "attachEnv": [],
+      "images": [],
+      "terraform": []
+    },
+    {
+      "id": "sentry", "name": "Sentry", "kind": "api",
+      "packages": { "npm": ["@sentry/node", "@sentry/nextjs", "@sentry/react"], "cargo": ["sentry"], "pypi": ["sentry-sdk"], "nuget": ["Sentry", "Sentry.AspNetCore"], "go": ["github.com/getsentry/sentry-go"] },
+      "schemes": [],
+      "prisma": [],
+      "env": ["^SENTRY_"],
+      "attachEnv": [],
+      "images": [],
+      "terraform": []
+    }
+  ],
+  "terraformGlue": ["^aws_iam_", "_attachment$", "_association$", "^aws_security_group_rule$", "^aws_route$", "^aws_route_table", "^aws_vpc_security_group_", "_policy$", "^random_", "^null_resource$", "^terraform_data$", "^local_", "^tls_"],
+  "deploySteps": [
+    { "pattern": "\\bvercel\\b.*\\bdeploy\\b|vercel-action", "name": "Vercel" },
+    { "pattern": "\\bflyctl\\s+deploy\\b|superfly/flyctl-actions", "name": "Fly.io" },
+    { "pattern": "\\bwrangler\\s+(deploy|publish)\\b|cloudflare/wrangler-action", "name": "Cloudflare Workers" },
+    { "pattern": "\\bkubectl\\s+apply\\b|\\bhelm\\s+upgrade\\b", "name": "Kubernetes" },
+    { "pattern": "\\bdocker\\s+push\\b|docker/build-push-action", "name": "container registry" },
+    { "pattern": "\\bterraform\\s+apply\\b", "name": "Terraform apply" },
+    { "pattern": "\\baz\\s+webapp\\s+deploy\\b|azure/webapps-deploy", "name": "Azure App Service" },
+    { "pattern": "\\bnpm\\s+publish\\b", "name": "npm" },
+    { "pattern": "\\bcargo\\s+publish\\b", "name": "crates.io" }
+  ],
+  "k8sKinds": ["Deployment", "StatefulSet", "DaemonSet", "CronJob", "Job", "Pod"],
+  "words": {
+    "tracked": "tracked by git",
+    "inRepo": "in the repo",
+    "inState": "{name} in Terraform state",
+    "ciSecret": "{name} (CI secret)",
+    "packageMain": "package main",
+    "runtimes": {
+      "bin": "bin",
+      "npmStart": "npm start",
+      "cargoBin": "cargo bin",
+      "rustMain": "src/main.rs",
+      "dotnetExe": "dotnet exe",
+      "aspnet": "ASP.NET",
+      "worker": "worker",
+      "plugin": "plugin",
+      "compose": "compose",
+      "dockerfile": "Dockerfile",
+      "procfile": "Procfile",
+      "fly": "Fly.io",
+      "wrangler": "Cloudflare Workers",
+      "deploysTo": "deploys to {name}",
+      "k8s": "k8s {kind}",
+      "port": " :{port}"
+    }
+  }
+}

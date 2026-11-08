@@ -1,0 +1,8 @@
+{
+  "name": "rubber-duck",
+  "version": "0.1.0",
+  "description": "A side-panel chat with a model you pick: talk through the project, or anything else.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

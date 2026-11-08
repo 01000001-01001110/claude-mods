@@ -1,0 +1,8 @@
+{
+  "name": "context-meter",
+  "version": "0.1.1",
+  "description": "Context usage meter above the prompt: raw and usable fill with the autocompact mark, turns-to-autocompact forecast, prompt-cache countdown and miss detection, files changed on disk since read, compactions, and a FRESH/AGING/STALE/COLD verdict.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "switchboard",
+  "version": "0.2.0",
+  "description": "/switchboard (and /mods where free) opens one pane to switch mods on or off at their next load and to block their new panes now, with an honest card per mod: now, next load, panes",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

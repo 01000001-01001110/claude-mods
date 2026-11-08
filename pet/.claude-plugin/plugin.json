@@ -1,0 +1,10 @@
+{
+  "name": "pet",
+  "version": "0.1.1",
+  "description": "A virtual pet above the prompt that grows from Claude's real work: tests, commits and edits.",
+  "author": {
+    "name": "Alan Newingham"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

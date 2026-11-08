@@ -1,0 +1,8 @@
+{
+  "name": "diff-review",
+  "version": "0.2.1",
+  "description": "Walk through the agent's edits hunk by hunk and keep or undo each one, then replay them by turn or file with Play/Pause, denied and failed calls included.",
+  "author": { "name": "Alan Newingham" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

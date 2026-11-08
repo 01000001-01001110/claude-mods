@@ -1,0 +1,18 @@
+{
+  "name": "screen-share",
+  "version": "0.1.0",
+  "description": "Screen share mode: masks keys, tokens, env values, user paths, emails, phone numbers, money and names on screen while you present or stream, with an ON AIR mark",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Alan Newingham"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "names": {
+      "type": "string",
+      "title": "Always hide",
+      "description": "Comma-separated names or words to mask whenever screen share is on (clients, companies, your own name)",
+      "default": ""
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "modernize",
+  "version": "0.1.0",
+  "description": "Understand and prove a legacy code modernization: intent, assessment, map, business rules with checked citations, a brief to approve, status, and a scripted PROVEN / PARTLY PROVEN / NOT PROVEN verdict",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Alan Newingham"
+  },
+  "license": "MIT"
+}
