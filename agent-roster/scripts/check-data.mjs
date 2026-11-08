@@ -1,6 +1,7 @@
 //! Checks that every key agent-roster's data ships is read by its code, so
 //! the data file never carries a key nothing uses, and that the userConfig
-//! defaults the data mirrors match plugin.json's.
+//! defaults the data mirrors match plugin.json's. The office's art (data/office-sprites.ts) is held the same way:
+//! each of its top-level keys must be read by the code or the sprite lint.
 //! Run: node agent-roster/scripts/check-data.mjs
 import fs from 'node:fs'
 
@@ -45,7 +46,12 @@ const groups = {
   office: ['O.', 'T.office.'],
   officeText: ['OX.', 'T.officeText.'],
 }
-const dead = []
+// The office art: its own file, read as `A.` (or `officeArt.`) by the hooks and the lint.
+const art = fs.readFileSync(new URL('data/office-sprites.ts', root), 'utf8')
+const artCode = code + fs.readFileSync(new URL('scripts/check-sprites.mjs', root), 'utf8')
+const artBody = art.slice(art.indexOf('export const officeArt'))
+const artKeys = [...artBody.matchAll(/^ {2}(\w+):/gm)].map(m => m[1])
+const dead = artKeys.filter(k => !['A.', 'officeArt.'].some(p => artCode.includes(p + k))).map(k => `officeArt.${k}`)
 for (const [block, prefixes] of Object.entries(groups)) {
   for (const key of keysOf(block)) if (!prefixes.some(p => code.includes(p + key))) dead.push(`${block}.${key}`)
 }
@@ -68,4 +74,4 @@ if (dead.length > 0 || mismatched.length > 0) {
   if (mismatched.length) console.error(`Defaults differ:\n  ${mismatched.join('\n  ')}`)
   process.exit(1)
 }
-console.log(`agent-roster data: every key in ${Object.keys(groups).length} blocks is used; the ${Object.keys(manifest.userConfig ?? {}).length} userConfig defaults match plugin.json.`)
+console.log(`agent-roster data: every key in ${Object.keys(groups).length} blocks and the office art's ${artKeys.length} is used; the ${Object.keys(manifest.userConfig ?? {}).length} userConfig defaults match plugin.json.`)

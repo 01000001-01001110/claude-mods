@@ -170,35 +170,131 @@ export type ViewMode = 'deck' | 'desk' | 'office'
 /** What an agent at its office desk is doing, read from its card, its running calls and the gate. */
 export type OfficeStateId = 'typing' | 'watching' | 'waiting' | 'done' | 'failed' | 'stopped'
 
-/** One office state: its pose and screen (sprite layer names), words, glyph, colour key and recoloured letters. */
+/** One office state: its pose and screen (layer names in each art set), words, glyph and colour key. */
 export type OfficeStateLook = {
+  /** The agent's pose frames, a key of an art set's `poses`. */
   pose: string
+  /** The monitor's frames, a key of an art set's `screens`. */
   screen: string
-  /** Under the desk; `{tool}` is the call running. */
+  /** In the legend under the room; `{tool}` is the call running. */
   word: string
   /** Before the agent in the inline row. */
   glyph: string
   /** A key of the palette's colours. */
   color: keyof Colors
-  /** Sprite letters drawn in another colour in this state (a green desk when done). */
-  tint: Record<string, string>
+}
+
+/** A sprite: rows of palette letters, every row the same length; the art's `clear` letter is see-through. */
+export type Sprite = string[]
+
+/** A prop on the wall, in priority order: centred at `at` (0 to 1 of the room's width), its top `y` pixels down. */
+export type WallPlace = { prop: string; at: number; y: number }
+
+/**
+ * A prop on the floor beside the desks: on the `side` given, `inset` pixels in from that edge, `y` pixels below
+ * the floor's top (`from: 'top'`) or above the room's bottom (`from: 'bottom'`). Left out when it would reach the
+ * desks, leave the room or overlap a prop placed before it.
+ */
+export type FloorPlace = { prop: string; side: 'left' | 'right'; inset: number; y: number; from: 'top' | 'bottom' }
+
+/** One art set: the room's wall and floor, its props, the clock, the desk with its chair, poses and screens. */
+export type ArtSet = {
+  wall: {
+    /** Pixels from the ceiling to the floor. */
+    height: number
+    /** Letters of the rows at the top, one a row. */
+    trim: string[]
+    /** The wall's letter. */
+    fill: string
+    /** The dado: its top line's row and letter, then a band dithered in two letters down to the skirting. */
+    dado: { top: number; line: string; dither: [string, string] }
+    /** Letters of the skirting rows at the wall's foot, one a row. */
+    skirting: string[]
+  }
+  floor: {
+    /** Pixel rows a plank takes, its seam row included. */
+    plankRows: number
+    /** The seam's letter: the row under a plank and the column where one plank meets the next. */
+    seam: string
+    /** The letter of a plank's top row (its lit edge). */
+    edge: string
+    /** Plank letters; each plank takes one by its place, so neighbours vary. */
+    variants: string[]
+    /** Plank lengths in pixels, taken in turn along a row. */
+    lengths: number[]
+    /** Pixels each row of planks is shifted from the one above. */
+    stagger: number
+    /** A nail's letter, a two-pixel stud just after each plank's start; null draws none. */
+    nail: string | null
+  }
+  /** Every prop's picture, by name. */
+  props: Record<string, Sprite>
+  /** Wall props in priority order: one that does not fit the room, or would overlap one placed before it, is left out. */
+  wallProps: WallPlace[]
+  /** Floor props in priority order. */
+  floorProps: FloorPlace[]
+  /** The clock: which prop it is, the hands' pivot in it, their lengths and letters, and the pivot's letter. */
+  clock: { prop: string; pivot: { x: number; y: number }; minuteLength: number; hourLength: number; minuteHand: string; hourHand: string; hub: string }
+  desk: {
+    /** The desk, monitor and tower; the agent is drawn over it and the chair over the agent. */
+    base: Sprite
+    chair: Sprite
+    /** Where the chair, the screen and the agent sit in the desk's picture. */
+    chairAt: { x: number; y: number }
+    screenAt: { x: number; y: number }
+    agentAt: { x: number; y: number }
+    /** Pixels from one desk's left edge to the next one's, and from one row's top to the next one's. */
+    pitchX: number
+    pitchY: number
+    /** Pixels between the wall's foot and the first row, and under the last row. */
+    top: number
+    bottom: number
+    /** Pixels kept clear at the room's left and right edges, and between the desks and a floor prop. */
+    margin: number
+    sideGap: number
+    /** Desks a row (fewer when the room is narrower), rows with no agent yet, and the most rows the room grows to. */
+    columns: number
+    baseRows: number
+    maxRows: number
+  }
+  /** The agent's pose frames by name, laid at `agentAt`. */
+  poses: Record<string, Sprite[]>
+  /** The monitor's frames by name, laid at `screenAt`. */
+  screens: Record<string, Sprite[]>
 }
 
 /**
- * The office sprite: a base picture `width` by `height` pixels as rows of palette letters, with pose frames laid
- * over it at `avatar` and screen frames at `screen`. A frame is a list of rows; '.' is see-through.
+ * The office's pictures: one palette for every set, the per-agent colour ramps and the letters they paint, and two
+ * art sets: a detailed one for graphical surfaces and a simpler one a terminal shows at a pixel a column.
  */
-export type OfficeSprite = {
-  width: number
-  height: number
-  avatar: { x: number; y: number }
-  screen: { x: number; y: number }
-  base: string[]
-  poses: Record<string, string[][]>
-  screens: Record<string, string[][]>
+export type OfficeArt = {
+  /** Sprite letters to `#rrggbb`. */
+  palette: Record<string, string>
+  /** Shirt ramps `[dark, mid, light]`, one per agent by its id; each mid is the agent's pastel accent. */
+  shirts: [string, string, string][]
+  /** Hair ramps `[dark, mid, light]`, one per agent by its id. */
+  hairs: [string, string, string][]
+  /** Skin ramps `[shade, mid]`, one per agent by its id. */
+  skins: [string, string][]
+  /** The letters each per-agent ramp paints, in the ramp's order. */
+  agentLetters: { shirt: [string, string, string]; hair: [string, string, string]; skin: [string, string] }
+  /** The see-through letter. */
+  clear: string
+  /** Which set each kind of surface draws. */
+  terminalSet: 'fine' | 'coarse'
+  graphicalSet: 'fine' | 'coarse'
+  sets: { fine: ArtSet; coarse: ArtSet }
+  /**
+   * The pixel-art checks `scripts/check-sprites.mjs` holds every sprite to: near-duplicate colours (within
+   * `nearLevels` on every channel) and micro-steps (neighbours differing by `microLevels` or less) as shares of at
+   * most the maxima; the mean cluster at least `minCluster` pixels; lone pixels at most `maxOrphan` of a sprite.
+   * Sprites smaller than `minPixels` (a 6 by 3 screen) are reported but not held to the cluster and orphan checks,
+   * which need room for clusters to form.
+   */
+  lint: { nearLevels: number; maxNearDup: number; microLevels: number; maxMicroStep: number; minCluster: number; maxOrphan: number; minPixels: number }
 }
 
-/** The office view's tuning: hotkey, timing, motion switch, layout, hover card, colours, sprite and states. */
+/** The office view's tuning: hotkey, timing, motion switch, the desktop scale, the hover card, the legend and states. */
 export type OfficeTuning = {
   /** The key that goes back to the deck while the office has the focus. */
   hotkey: string
@@ -207,31 +303,32 @@ export type OfficeTuning = {
   /** `motionNone` keeps every desk on its first frame; anything else animates running desks. */
   motion: string
   motionNone: string
-  /** Cells between desks in a row; blank rows between rows. */
-  deskGap: number
-  rowGap: number
-  /** Desks drawn docked; the rest are counted. */
-  maxDesks: number
-  /** The hover card's width with border and padding, its row offset, those border and padding cells. */
+  /** How often the office looks at the wall clock while it shows; it redraws when the minute has turned. */
+  clockCheckMs: number
+  /**
+   * A graphical surface: CSS pixels a column and a row (where the hover boxes sit), the room's target and widest
+   * width in art pixels, and the range of the whole-number scale.
+   */
+  desktop: { columnPx: number; rowPx: number; targetRoomPx: number; maxRoomPx: number; minScale: number; maxScale: number }
+  /** The hover card's width with border and padding, its row below the desk's top, those border and padding cells. */
   cardCols: number
   cardTop: number
   cardInset: number
   /** The hover card's backdrop per palette. */
   cardBg: { theme: string; pastel: string }
-  /** CSS pixels per sprite pixel on a graphical surface. */
-  svgPx: number
-  /** Shirt colours, one per agent by its id. */
-  shirts: string[]
-  /** Sprite letters to `#rrggbb`. */
-  palette: Record<string, string>
-  sprite: OfficeSprite
+  /** The legend under the room: cells between entries, the most cells a name takes, the swatch in the shirt's colour. */
+  legendGap: number
+  legendName: number
+  legendSwatch: string
   states: Record<OfficeStateId, OfficeStateLook>
+  /** An empty desk's screen, a key of an art set's `screens`. */
+  emptyScreen: string
 }
 
 /** Every line the office says. `{name}` placeholders are filled by the code. */
 export type OfficeText = Record<
   | 'title' | 'counts' | 'countsNarrow' | 'tokens' | 'empty' | 'back' | 'more' | 'task' | 'now' | 'last' | 'noCalls'
-  | 'tokensLine' | 'elapsed' | 'line' | 'alt' | 'sep',
+  | 'tokensLine' | 'elapsed' | 'line' | 'alt' | 'sep' | 'legend' | 'emptyDesk',
   string
 >
 

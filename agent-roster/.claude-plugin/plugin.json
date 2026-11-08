@@ -1,6 +1,6 @@
 {
   "name": "agent-roster",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Roster, a live agent dashboard (/roster): main model vitals, an on-call architect, every permission check, subagent cards and swimlanes, a turn receipt and a session log, all from real session events; a helper desk view and an office of pixel avatars at their desks.",
   "types": "./types/index.d.ts",
   "author": {

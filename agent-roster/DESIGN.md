@@ -76,25 +76,33 @@ when its value exists, so a session without it draws the row exactly as the refe
      own shape tag (`DESK_SHAPE` in `hooks/desk-rules.ts`), so adding it did not retire the deck's stored records.
      `/roster reset` and `/clear` empty its list and tallies and keep the view.
 
-6. **The office view** (added 2026-11-08). A third view of the same pane, `/roster view office`; its `h: back to deck`
-   switch (hotkey data `office.hotkey`) goes back. The deck and the desk are drawn exactly as before.
-   - **Top row**: `OFFICE · 2 at work · 3 desks · 41k agent tok` (narrow below `narrowBelow`: `2/3`, no tokens), the
+6. **The office view** (added 2026-11-08, redrawn as a room in 0.4.0). A third view of the same pane, `/roster view office`;
+   its `h: back to deck` switch (hotkey data `office.hotkey`) goes back. The deck and the desk are drawn exactly as before.
+   - **Top row**: `OFFICE · 2 at work · 3 agents · 41k agent tok` (narrow below `narrowBelow`: `2/3`, no tokens), the
      back switch, then the close control `✕`.
-   - **Docked**: one desk per agent in spawn order, `office.sprite.width` (14) cells wide and `deskGap` (2) apart,
-     wrapping into rows (2 a row at 40 columns, 4 at 66, 7 at 110), up to `maxDesks`, then `+N more agents`. Each
-     desk is a pixel picture (a 14 by 12 pixel sprite: a Raster of half-block cells on the terminal, SVG on desktop),
-     the agent's name in its accent, and what it is doing in the state's colour.
-   - **States**, from the agent's card, its running calls and the gate: `typing` (any call but a shell one, or
-     between calls: hands move, code appears on the screen), `running <tool>` (a shell call: hands rest, a progress
-     bar grows on the screen), `needs an ok` (a call waiting on a permission ask: a hand raised and waving, a `?`
-     blinking on the screen), `done` (leans back, screen off, the desk turns green), `failed` (a red screen with an
-     X), `stopped` (leans back at a plain desk). Each state's pose, screen, word, glyph, colour and tints are data.
+   - **Docked**: one pixel-art room as wide as the pane. The wall (trim, a dithered dado band, wood skirting) carries
+     the door, two bookshelves, a clock at the local time, a picture, a notice and a water cooler, each placed in
+     priority order where it fits; the wood-plank floor carries a manager's desk, a plant and bins beside the desks.
+     The desks stand in a grid in the middle of the floor, `columns` a row (fewer when narrow), `baseRows` rows
+     before any agent, one more row each time they fill, up to `maxRows`, then `+N more agents`. Each agent sits
+     at a desk in spawn order, seen from behind, its shirt its accent; an empty desk shows an empty chair. Under the
+     room, a legend: a swatch in the shirt's colour, the name, and what it is doing. All of it is letter grids and
+     settings in `data/office-sprites.ts`.
+   - **States**, from the agent's card, its running calls and the gate, shown on the monitor: `typing` (code
+     scrolling, shoulders moving), `running <tool>` (a shell call: a progress bar filling), `needs an ok` (a call
+     waiting on a permission ask: a blinking `?`, an arm raised), `done` (a green screen with a check, leaning back),
+     `failed` (a red screen with an X), `stopped` (screen off). Each state's pose, screen, word, glyph and colour
+     are data.
+   - **Surfaces**: the terminal draws the room as one Raster of half-block cells, a pixel a column, from the
+     `coarse` art set; a graphical surface as one SVG (`shape-rendering="crispEdges"`) from the `fine` set, at the
+     whole-number scale `office.desktop` picks to fill the pane.
    - **Motion** only while an agent runs, the office is the view and motion is on (userConfig `motion`, data
-     `office.motion`, `none` keeps every desk still): a `frameMs` timer blits each moving desk's next frame into its
-     Raster; desktop SVG carries its frames as a SMIL animation. The timer stops when nobody runs.
-   - **Hover** a desk: a card (`cardCols` wide, drawn `display: none` with `hover: { display: 'flex' }` over the desk,
-     moved left to stay in the pane) with the task, the call running or the last one, tokens, context and calls, and
-     a live clock.
+     `office.motion`, `none` keeps every desk still): a `frameMs` timer paints the room at the clock's frames and
+     blits it into the Raster; desktop SVG carries each moving desk's frames as a SMIL animation. Otherwise, while the
+     office shows, the timer looks at the clock every `clockCheckMs` and redraws when the minute has turned.
+   - **Hover** a desk: a card (`cardCols` wide, drawn `display: none` with `hover: { display: 'flex' }` in a box laid
+     over the desk, moved left to stay in the pane) with the task, the call running or the last one, tokens,
+     context and calls, and a live clock.
    - **Inline**, at most `inlineRows`: the top row, then an agent a line (state glyph, name, state, tokens, calls).
    - **State**: no new record. The view is the desk record's `view` (`deck | desk | office`, same shape tag); the
      office reads the cards, the desk's tallies and the gate.

@@ -30,18 +30,20 @@ The desk's top row has `h: back to deck` (press `h` with the pane focused) and t
 
 ## Office
 
-A third view, `/roster view office`: a little office with one desk per subagent, in the order they started, wrapping into rows as the pane allows (two a row at 40 columns, four at 66, seven at 110). At each desk a pixel avatar sits at a monitor, its shirt a colour of its own, with the agent's name and what it is doing underneath:
+A third view, `/roster view office`: a pixel-art office room. A pale wall with a dithered dado band and a wood skirting, a door, two bookshelves, a clock showing your local time, a framed picture, a notice and a water cooler; a wood-plank floor with a manager's desk, a plant and bins; and in the middle a grid of desks seen from behind, each with a monitor, keyboard, tower and office chair. Each subagent takes a desk in the order it started and sits at it, head and shoulders over the chair back, its shirt in its own accent colour. Empty desks show an empty chair. With more agents than desks the room grows a row at a time, up to four rows, then counts the rest (`+2 more agents`). A legend under the room names each agent and what it is doing.
+
+The monitor says what the agent is doing:
 
 | The agent | The desk |
 | --- | --- |
-| editing, reading or thinking | typing, code appearing on the screen (`typing`) |
-| running a shell command | hands resting, a progress bar growing on the screen (`running Bash`) |
-| waiting for your permission | a hand raised and waving, a `?` on the screen (`needs an ok`) |
-| done | leaning back, screen off, the desk turns green |
+| editing, reading or thinking | code lines scrolling on the screen, shoulders moving as it types (`typing`) |
+| running a shell command | a progress bar filling on the screen (`running Bash`) |
+| waiting for your permission | a blinking `?` on the screen and an arm raised (`needs an ok`) |
+| done | a green screen with a check, the agent leaning back, hands behind the head |
 | failed | a red screen with an X |
-| stopped | leaning back at a plain desk |
+| stopped | the screen off |
 
-Hover a desk (or its monitor) for a card: the task, the call running now or the last one, tokens, context and calls, and a live clock. The avatars move only while agents run and the office is showing; `motion: off` keeps them still. The terminal draws each desk as a grid of half-block cells repainted in place; the desktop app draws it as SVG. Inline above the prompt it is one row per agent. `h: back to deck` (or `h` with the pane focused) goes back.
+Hover a desk for a card: the task, the call running now or the last one, tokens, context and calls, and a live clock. The room moves only while an agent runs and the office is showing; `motion: off` keeps it still. The clock's hands are redrawn when the minute turns. The terminal draws the room as one grid of half-block cells, a pixel a column, with a simpler set of sprites so it reads at 66 columns, repainted in place while agents work; the desktop app draws it as one SVG with crisp pixels at a whole-number scale that fills the pane, animated by the app itself. Inline above the prompt it is one row per agent. `h: back to deck` (or `h` with the pane focused) goes back.
 
 ## Use
 
@@ -81,7 +83,7 @@ The layout is locked in [DESIGN.md](DESIGN.md), with the deliberate differences 
 
 ## Tuning
 
-Everything else is in `data/agent-roster.ts`: every line of text and glyph, both palettes and the desktop axis colours, the widths and thresholds the layout turns on (two columns at 110, reset times at 56, the narrow forms below 40, the card minimum of 20), how much history is kept, the loop activity window, the compaction-window retries, the connector and clock timings, the tool families, the secret patterns and the effort levels. The office's words are in `officeText` and everything else about it in `office`: the hotkey, the frame time, the motion switch, desk gaps, the desks shown, the hover card's size and backdrop, the shirts, the palette, the sprite (base, poses and screens as rows of letters) and each state's pose, screen, word, glyph, colour and tints. The helper desk's words are in `deskText` and its tuning in `desk`: the hotkey, the bar widths, the rows listed, the history kept, the plan tool's name, and `clearTodosOnPrompt` (off by default, because a task-tool list outlives the prompt that made it). The userConfig defaults are mirrored there and checked against `plugin.json`.
+Everything else is in `data/agent-roster.ts`: every line of text and glyph, both palettes and the desktop axis colours, the widths and thresholds the layout turns on (two columns at 110, reset times at 56, the narrow forms below 40, the card minimum of 20), how much history is kept, the loop activity window, the compaction-window retries, the connector and clock timings, the tool families, the secret patterns and the effort levels. The office's words are in `officeText` and its tuning in `office`: the hotkey, the frame time, the motion switch, how often the clock is looked at, the desktop scale (CSS pixels a column and a row, the room's target and widest width, the scale's range), the hover card's size and backdrop, the legend, and each state's pose, screen, word, glyph and colour. Its pictures are in `data/office-sprites.ts`: one palette of hand-picked ramps, the per-agent shirt, hair and skin ramps, and two art sets (`fine` for the desktop, `coarse` for the terminal), each with the wall and floor, every prop as rows of letters, where props go, the clock's hands, the desk, chair, poses and screens, the grid's pitch, columns and rows, and the pixel-art lint's thresholds. The helper desk's words are in `deskText` and its tuning in `desk`: the hotkey, the bar widths, the rows listed, the history kept, the plan tool's name, and `clearTodosOnPrompt` (off by default, because a task-tool list outlives the prompt that made it). The userConfig defaults are mirrored there and checked against `plugin.json`.
 
 ## Files
 
@@ -90,7 +92,8 @@ Everything else is in `data/agent-roster.ts`: every line of text and glyph, both
 | `hooks/register.tsx` | the event hooks, state access and the status line |
 | `hooks/deck.tsx` | the drawing: one function per panel, the layouts and the inline summary |
 | `hooks/desk.tsx`, `hooks/desk-rules.ts` | the helper desk: its drawing; its record, to-do list, per-agent tallies and token shares |
-| `hooks/office.tsx`, `hooks/office-rules.ts` | the office: its drawing and hover cards; each agent's state, the wrapping, the sprite's frames, Raster cells and SVG |
+| `hooks/office.tsx`, `hooks/office-rules.ts` | the office: its drawing, legend and hover cards; each agent's state, the room's layout, painting, clock, frames, Raster cells and SVG |
+| `data/office-sprites.ts` | the office's art: palette, agent ramps, both art sets as letter grids |
 | `hooks/records.ts` | the stored records: blank forms, the repair every read goes through, the shape tag, the userConfig reader |
 | `hooks/ledger.ts` | the bookkeeping: context and compactions, the gate, the turn, consults, cards and loops |
 | `hooks/words.ts` | text: templates, number and time formats (total: a bad value prints a dash), model names, masking, hand-backs |
@@ -99,6 +102,8 @@ Everything else is in `data/agent-roster.ts`: every line of text and glyph, both
 | `types/index.d.ts` | the state contract and the tuning's shape |
 | `scripts/parity/` | the parity harness: same scenarios, every frame diffed against the reference dashboard's source |
 | `scripts/overlap.mjs` | counts lines of our hooks that also appear verbatim in a reference's hooks |
+| `scripts/check-sprites.mjs` | the pixel-art lint on every office sprite: colours, near-duplicates, clusters, lone pixels, micro-steps |
+| `scripts/office-proof.mjs` | renders a four-agent office as the plugin draws it, to PNGs and terminal text, for a look without a session |
 
 ## Develop
 
@@ -107,6 +112,8 @@ claude plugin validate agent-roster
 npx -p typescript tsc -p agent-roster      # after a first load writes .claude-plugin/types
 claude plugin test agent-roster
 node agent-roster/scripts/check-data.mjs   # every data key used; defaults match plugin.json
+node agent-roster/scripts/check-sprites.mjs  # the office art's pixel-art lint
+node agent-roster/scripts/office-proof.mjs --out <folder>  # a four-agent office as PNGs and terminal text
 node agent-roster/scripts/parity/run.mjs --reference <reference plugin folder>
 ```
 

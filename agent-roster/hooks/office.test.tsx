@@ -1,41 +1,53 @@
 //! The office's tests (DESIGN.md, additions). Expectations are computed from the shipped data (`T.office`,
-//! `T.officeText`), so a re-tune does not break them and a broken data file does. The rules are tested on plain
-//! values, every threshold at its boundaries; the view is driven through the engine (`/roster view office`, spawns,
-//! held tool calls, permission asks, turn ends, the frame timer, the hotkey and the close control) and its golden
-//! frames are asserted on what they draw: the terminal's Raster cells decoded back to glyphs and colours, the
-//! desktop's SVG, every word, the hover card, the wrapping, and the inline rows. Stored state from another shape
-//! is seeded through `state.get`.
+//! `T.officeText`, `officeArt`), so a re-tune does not break them and a broken data file does. The rules are tested
+//! on plain values, every threshold at its boundaries: the room's columns and rows, the props that fit, the clock's
+//! hands at two times, the desktop scale. The view is driven through the engine (`/roster view office`, spawns,
+//! held tool calls, permission asks, turn ends, the timer, the hotkey and the close control) and its golden frames
+//! are asserted on what they draw: the terminal's Raster decoded back to colours and read region by region against
+//! the sprites, the desktop's SVG parsed back to pixels the same way, every word, the hover cards, the room's growth
+//! and the inline rows. Stored state from another shape is seeded through `state.get`.
 //!
-//! The pictures are checked against a composite the tests build themselves from the sprite rows, so a fault in
-//! the module's own compositing shows.
+//! The pictures are read with the tests' own decoders (base64 cells, SVG paths) and checked against the art's
+//! letter grids directly, so a fault in the module's compositing, packing or path merging shows.
 
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import { tuning as T } from '../data/agent-roster'
-import type { Card, GateLog, OfficeStateId } from '../types'
+import { officeArt as A } from '../data/office-sprites'
+import type { ArtSet, Card, GateLog, OfficeStateId, Sprite } from '../types'
 import { DESK_SHAPE, blankDesk } from './desk-rules'
-import { cells } from './geometry'
+import { accentFor } from './geometry'
 import {
+  agentColors,
   base64,
   cardPlace,
   colorWord,
   deskCells,
-  deskRowsOf,
-  deskSvg,
-  desksPerRow,
+  desktopScale,
+  floorLetter,
   frameAt,
   frameCount,
   halfBlocks,
+  handAngles,
+  handTip,
   isMoving,
+  linePixels,
+  localTime,
   officeStateOf,
   packCells,
-  rasterSize,
+  paintRoom,
+  pathsOf,
+  roomLayout,
+  roomSvg,
+  seatsFor,
   shirtOf,
-  spriteLetters,
+  terminalRoomWidth,
   toolNow,
+  wallLetter,
 } from './office-rules'
+import type { Paint, RoomLayout, Seat, SetName } from './office-rules'
 import { rasterKey } from './office'
 import { STORE_SHAPE, blankCard, blankGate } from './records'
 import { clip, counted, fill, tokensShort } from './words'
@@ -45,34 +57,40 @@ const OX = T.officeText
 const G = T.glyphs
 const PANE = T.pane.id
 const PLUGIN = 'agent-roster'
-const W = O.sprite.width
 const STATES = Object.keys(O.states) as OfficeStateId[]
 const DEFAULT = 0x01000000
+const TERM: SetName = A.terminalSet
+const FINE: SetName = A.graphicalSet
+const SETS = Object.keys(A.sets) as SetName[]
+/** The SVG size the engine accepts (SvgProps.source). */
+const SVG_LIMIT = 131072
 
 type Dollar = Parameters<TestBody>[0]
 
 // ---------------------------------------------------------------- the host beneath
 
-/** The host's answers a drawing test needs: a mocked clock, the status line, turns, the pane, blits recorded. */
+/** The host's answers a drawing test needs: a mocked clock, the status line, turns, the pane, blits and redraws recorded. */
 function host(on: On) {
   const clock = mock.clock(on)
   on('ui.status', () => ({ value: undefined }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }) as never)
-  const blits: { key: string; cells: string }[] = []
+  const blits: { key: string; cells: string; columns?: number; rows?: number }[] = []
   on('ui.blit', (_$, e) => {
-    const b = e as { key: string; cells?: string }
-    blits.push({ key: b.key, cells: b.cells ?? '' })
+    const b = e as { key: string; cells?: string; columns?: number; rows?: number }
+    blits.push({ key: b.key, cells: b.cells ?? '', columns: b.columns, rows: b.rows })
     return { value: {} } as never
   })
-  return { clock, blits }
+  const redraws = { n: 0 }
+  on('ui.invalidate', (_$, e, next) => {
+    if ((e as { event?: string }).event === 'ui.render' || e === ('ui.render' as never)) redraws.n += 1
+    return next(e)
+  })
+  return { clock, blits, redraws }
 }
 
-/**
- * Counts state reads. With no event and no drawing, only the office's frame timer reads state, so reads that go on
- * while nothing happens show a timer left running. (The clock's own events are the mocked clock's to answer.)
- */
+/** Counts state reads: with no event and no drawing only the office's timer reads state. */
 function countReads(on: On) {
   const reads = { n: 0 }
   on('state.get', (_$, e, next) => {
@@ -175,72 +193,123 @@ function decodeCells(encoded: string, columns: number): [string, number, number]
   return rows
 }
 
-/**
- * The tests' own composite of a state's frame: the sprite's base, the pose frame over it at the avatar's place,
- * the screen frame at the monitor's; then each letter's colour (tint, shirt, palette). Written apart from the
- * module's, so a fault in either shows.
- */
-function expectedPaint(id: string, state: OfficeStateId, index: number): (string | null)[][] {
-  const look = O.states[state]
-  const grid = O.sprite.base.map(r => r.split(''))
-  const lay = (frames: string[][] | undefined, at: { x: number; y: number }) => {
-    const f = frames && frames.length > 0 ? frames[index % frames.length] : undefined
-    f?.forEach((line, dy) => line.split('').forEach((ch, dx) => {
-      const row = grid[at.y + dy]
-      if (ch !== '.' && row && at.x + dx < row.length) row[at.x + dx] = ch
-    }))
-  }
-  lay(O.sprite.poses[look.pose], O.sprite.avatar)
-  lay(O.sprite.screens[look.screen], O.sprite.screen)
-  return grid.map(r => r.map(ch => (ch === '.' ? null : look.tint[ch] ?? (ch === 's' ? shirtOf(id) : O.palette[ch] ?? null))))
-}
+const hexOf = (n: number) => `#${n.toString(16).padStart(6, '0')}`
 
-/** What a Raster of `paint` must hold, cell by cell, by the half-block rule. */
-function expectedCells(paint: (string | null)[][]): [string, number, number][][] {
-  const word = (c: string | null) => (c === null ? DEFAULT : parseInt(c.slice(1), 16))
-  const out: [string, number, number][][] = []
-  for (let y = 0; y < paint.length; y += 2) {
-    out.push(
-      (paint[y] ?? []).map((up, x) => {
-        const down = paint[y + 1]?.[x] ?? null
-        if (up === null && down === null) return [' ', DEFAULT, DEFAULT]
-        if (up === null) return ['▄', word(down), DEFAULT]
-        return ['▀', word(up), word(down)]
-      }),
-    )
+/** A Raster's pixels back from its half-block cells: two pixel rows a cell row (upper half, lower half). */
+function rasterPixels(encoded: string, columns: number): Paint {
+  const out: Paint = []
+  for (const row of decodeCells(encoded, columns)) {
+    const top: (string | null)[] = []
+    const bottom: (string | null)[] = []
+    for (const [glyph, fg, bg] of row) {
+      if (glyph === '▀') {
+        top.push(fg === DEFAULT ? null : hexOf(fg))
+        bottom.push(bg === DEFAULT ? null : hexOf(bg))
+      } else if (glyph === '▄') {
+        top.push(null)
+        bottom.push(fg === DEFAULT ? null : hexOf(fg))
+      } else {
+        top.push(null)
+        bottom.push(null)
+      }
+    }
+    out.push(top, bottom)
   }
   return out
 }
 
-/** The text of a drawn office: the top row, then each row of desks side by side (pictures as their glyphs). */
-function officeText(tree: unknown, width: number): string[] {
-  const lines: string[] = []
-  const root = isNode(tree) ? tree : null
-  if (root === null) return lines
-  for (const part of kidsOf(root)) {
-    const key = String(part.props?.key ?? '')
-    if (key === 'office-top') {
-      const pieces = nodes(part).filter(n => n.type === 'Text' || n.type === 'Button')
-      lines.push(pieces.map(p => (p.type === 'Button' ? (p.props?.hotkey ? `${String(p.props.hotkey)}: ` : '') + (textIn(p) || String(p.props?.label ?? '')) : textIn(p))).join(' '))
-    } else if (key.startsWith('office-row-')) {
-      lines.push('')
-      const columns = kidsOf(part).map(deskBox => {
-        const col: string[] = []
-        for (const k of kidsOf(deskBox)) {
-          if (k.type === 'Raster') for (const r of decodeCells(String(k.props?.cells), Number(k.props?.columns))) col.push(r.map(c => c[0]).join(''))
-          else if (k.type === 'Text') col.push(textIn(k))
-        }
-        return col
-      })
-      const height = Math.max(0, ...columns.map(c => c.length))
-      for (let i = 0; i < height; i += 1) {
-        const line = columns.map(c => (c[i] ?? '').padEnd(W)).join(' '.repeat(O.deskGap)).trimEnd()
-        // A row of desks wider than the pane is marked, for the fit tests.
-        lines.push(cells(line) > width ? `${line} <past ${width}>` : line)
-      }
-    } else lines.push(textIn(part))
+/**
+ * An SVG's pixels back from its markup, in art pixels: every `<path>` outside the animation groups, each
+ * `M x y h w v h h-w z` a filled rectangle. Also its size, viewBox and the groups' count.
+ */
+function svgPixels(source: string): { paint: Paint; width: number; height: number; viewW: number; viewH: number; groups: string[] } {
+  const head = /width="(\d+)" height="(\d+)" viewBox="0 0 (\d+) (\d+)"/.exec(source)
+  const [width, height, viewW, viewH] = (head ?? []).slice(1).map(Number) as [number, number, number, number]
+  const paint: Paint = Array.from({ length: viewH }, () => Array<string | null>(viewW).fill(null))
+  const groups = Array.from(source.matchAll(/<g opacity="0">(.*?)<\/g>/g), m => m[1] as string)
+  // Patterns: each a tile of paths, repeated under the rectangles that name it, before the paths.
+  const tiles = new Map<string, Paint>()
+  for (const m of source.matchAll(/<pattern id="(\w+)" width="(\d+)" height="(\d+)" patternUnits="userSpaceOnUse">(.*?)<\/pattern>/g)) {
+    const tile: Paint = Array.from({ length: Number(m[3]) }, () => Array<string | null>(Number(m[2])).fill(null))
+    fillPaths(tile, m[4] as string)
+    tiles.set(m[1] as string, tile)
   }
-  return lines
+  for (const m of source.matchAll(/<rect x="(\d+)" y="(\d+)" width="(\d+)" height="(\d+)" fill="url\(#(\w+)\)"\/>/g)) {
+    const [x, y, w, h] = m.slice(1, 5).map(Number) as [number, number, number, number]
+    const tile = tiles.get(m[5] as string) ?? [[null]]
+    for (let yy = y; yy < y + h; yy += 1) {
+      for (let xx = x; xx < x + w; xx += 1) if (paint[yy]) (paint[yy] as (string | null)[])[xx] = tile[yy % tile.length]?.[xx % (tile[0] ?? []).length] ?? null
+    }
+  }
+  const still = source.replace(/<g opacity="0">.*?<\/g>/g, '').replace(/<defs>.*?<\/defs>/g, '')
+  fillPaths(paint, still)
+  return { paint, width, height, viewW, viewH, groups }
+}
+
+/** Paints every `<path>` in `markup` into `paint`. */
+function fillPaths(paint: Paint, markup: string) {
+  for (const m of markup.matchAll(/<path fill="(#[0-9a-f]{6})" d="([^"]+)"\/>/g)) {
+    for (const r of (m[2] as string).matchAll(/M(\d+) (\d+)h(\d+)v(\d+)h-(\d+)z/g)) {
+      const [x, y, w, h] = r.slice(1, 5).map(Number) as [number, number, number, number]
+      for (let yy = y; yy < y + h; yy += 1) for (let xx = x; xx < x + w; xx += 1) if (paint[yy]) (paint[yy] as (string | null)[])[xx] = m[1] as string
+    }
+  }
+}
+
+/** A sprite's colours as the tests read the art: the palette, then `extra` (an agent's ramps); clear is null. */
+function spriteColors(s: Sprite, extra: Record<string, string> = {}): (string | null)[][] {
+  return s.map(line => Array.from(line).map(ch => (ch === A.clear ? null : (extra[ch] ?? A.palette[ch] ?? null))))
+}
+
+/** The `w` by `h` block of `paint` at (x, y). */
+const region = (paint: Paint, x: number, y: number, w: number, h: number) => paint.slice(y, y + h).map(r => r.slice(x, x + w))
+
+/** Asserts every drawn pixel of `s` shows at (x, y) in `paint`, except where `covered(dx, dy)` says a later layer is on top. */
+function expectSprite(label: string, paint: Paint, s: Sprite, x: number, y: number, extra: Record<string, string> = {}, covered: (dx: number, dy: number) => boolean = () => false) {
+  const want = spriteColors(s, extra)
+  const wrong: string[] = []
+  want.forEach((row, dy) =>
+    row.forEach((c, dx) => {
+      if (c === null || covered(dx, dy)) return
+      const got = paint[y + dy]?.[x + dx] ?? null
+      if (got !== c) wrong.push(`${dx},${dy}: ${got} != ${c}`)
+    }),
+  )
+  expect([label, wrong.slice(0, 3)]).toEqual([label, []])
+}
+
+/** Whether the chair covers a pose pixel (dx, dy) of an agent laid at the set's `agentAt`. */
+function chairCovers(set: ArtSet) {
+  const D = set.desk
+  return (dx: number, dy: number) => {
+    const cx = D.agentAt.x + dx - D.chairAt.x
+    const cy = D.agentAt.y + dy - D.chairAt.y
+    const ch = D.chair[cy]?.[cx]
+    return ch !== undefined && ch !== A.clear
+  }
+}
+
+/**
+ * Asserts desk `i` of a painted room shows the seat: the state's screen frame exactly, the agent's pose frame in its
+ * own colours where the chair leaves it, the chair; an empty desk the empty screen and no agent.
+ */
+function expectDesk(label: string, paint: Paint, layout: RoomLayout, i: number, seat: Seat | null) {
+  const set = A.sets[layout.setName]
+  const D = set.desk
+  const at = layout.desks[i] as { x: number; y: number }
+  const look = seat === null ? null : O.states[seat.state]
+  const screens = set.screens[look?.screen ?? O.emptyScreen] as Sprite[]
+  const screen = screens[(seat?.frame ?? 0) % screens.length] as Sprite
+  expect([label, 'screen', region(paint, at.x + D.screenAt.x, at.y + D.screenAt.y, (screen[0] ?? '').length, screen.length)]).toEqual([label, 'screen', spriteColors(screen)])
+  expectSprite(`${label} chair`, paint, D.chair, at.x + D.chairAt.x, at.y + D.chairAt.y)
+  if (seat !== null && look !== null) {
+    const poses = set.poses[look.pose] as Sprite[]
+    expectSprite(`${label} agent`, paint, poses[seat.frame % poses.length] as Sprite, at.x + D.agentAt.x, at.y + D.agentAt.y, agentColors(seat.id), chairCovers(set))
+  } else {
+    // No agent: no shirt colour anywhere on the desk.
+    const shirts = new Set(A.shirts.flat())
+    expect([label, region(paint, at.x, at.y, layout.deskW, layout.deskH).flat().some(c => c !== null && shirts.has(c))]).toEqual([label, false])
+  }
 }
 
 /** The office drawn at `cols`, on `surface`, docked or inline. */
@@ -251,11 +320,21 @@ async function officeAt($: Dollar, cols: number, placement: 'dock' | 'inline' = 
   return tree
 }
 
-/** A desk's Box in a drawing, by agent id. */
+/** A desk's hover Box in a drawing, by agent id. */
 const deskBox = (tree: unknown, id: string) => findNode(tree, n => n.type === 'Box' && n.props?.key === `office-desk-${id}`)
-
-/** The two words under a desk: its name and its state. */
-const deskWords = (desk: Drawn | undefined) => (desk ? kidsOf(desk).filter(k => k.type === 'Text').map(textIn) : [])
+/** The card inside a desk's hover box. */
+const cardIn = (box: Drawn | undefined) => (box ? findNode(box, n => n !== box && n.type === 'Box' && n.props?.position === 'absolute') : undefined)
+/** A legend entry's three texts: swatch, name, state. */
+const legendOf = (tree: unknown, id: string) => {
+  const entry = findNode(tree, n => n.type === 'Box' && n.props?.key === `office-legend-${id}`)
+  return entry ? kidsOf(entry).map(k => ({ text: textIn(k), color: k.props?.color })) : []
+}
+/** The room's picture: the terminal Raster's pixels or the desktop SVG's. */
+function roomPixels(tree: unknown): Paint {
+  const raster = findNode(tree, n => n.type === 'Raster')
+  if (raster) return rasterPixels(String(raster.props?.cells), Number(raster.props?.columns))
+  return svgPixels(String(findNode(tree, n => n.type === 'Svg')?.props?.source)).paint
+}
 
 // ---------------------------------------------------------------- fixtures
 
@@ -264,64 +343,86 @@ const gateWith = (checks: { id: string; verdict: 'rule' | 'ask' | 'cleared' | 'd
   ...blankGate,
   recent: checks.map(c => ({ id: c.id, tool: 'Bash', bucket: 'shell', verdict: c.verdict, inSubagent: true, detail: '', at: 1 })),
 })
+const occupant = (id: string, state: OfficeStateId) => ({ card: card(id), tally: undefined, state })
+const NOON = { hours: 12, minutes: 0 }
 
-// ================================================================ the data
+// ================================================================ the art
 
-test("the sprite is well formed: every row the sprite's width, every layer inside it, every letter painted", () => {
-  const known = new Set([...Object.keys(O.palette), '.', 's'])
-  expect(O.sprite.base.length).toBe(O.sprite.height)
-  for (const row of O.sprite.base) expect([row, cells(row)]).toEqual([row, W])
-  const check = (frames: string[][], at: { x: number; y: number }, name: string) => {
-    expect([name, frames.length > 0]).toEqual([name, true])
-    for (const f of frames) {
-      expect([name, at.y + f.length <= O.sprite.height]).toEqual([name, true])
-      const width = cells(f[0] ?? '')
-      for (const line of f) {
-        expect([name, line, cells(line), at.x + cells(line) <= W]).toEqual([name, line, width, true])
-        for (const ch of line) expect([name, ch, known.has(ch)]).toEqual([name, ch, true])
-      }
+test('the art is well formed: every sprite rectangular, every letter painted, every layer inside its desk, every state drawable', () => {
+  const agentLetters = new Set([...A.agentLetters.shirt, ...A.agentLetters.hair, ...A.agentLetters.skin])
+  const known = (ch: string) => ch === A.clear || A.palette[ch] !== undefined
+  const checkSprite = (name: string, s: Sprite, allowAgent: boolean) => {
+    expect([name, s.length > 0]).toEqual([name, true])
+    const w = (s[0] ?? '').length
+    for (const row of s) expect([name, row.length]).toEqual([name, w])
+    const unknown = s.join('').split('').filter(ch => !known(ch) && !(allowAgent && agentLetters.has(ch)))
+    expect([name, unknown]).toEqual([name, []])
+  }
+  for (const name of SETS) {
+    const set = A.sets[name]
+    const D = set.desk
+    checkSprite(`${name} desk`, D.base, false)
+    checkSprite(`${name} chair`, D.chair, false)
+    const inDesk = (s: Sprite, at: { x: number; y: number }) => at.x >= 0 && at.y >= 0 && at.x + (s[0] ?? '').length <= (D.base[0] ?? '').length && at.y + s.length <= D.base.length
+    expect([name, 'chair inside', inDesk(D.chair, D.chairAt)]).toEqual([name, 'chair inside', true])
+    for (const [p, frames] of Object.entries(set.poses)) frames.forEach((f, i) => {
+      checkSprite(`${name} pose ${p}[${i}]`, f, true)
+      expect([name, p, i, inDesk(f, D.agentAt)]).toEqual([name, p, i, true])
+    })
+    for (const [s, frames] of Object.entries(set.screens)) frames.forEach((f, i) => {
+      checkSprite(`${name} screen ${s}[${i}]`, f, false)
+      // Every screen is the same size, so a frame never leaves a piece of the one before.
+      expect([name, s, i, f.length, (f[0] ?? '').length]).toEqual([name, s, i, (frames[0] ?? []).length, ((frames[0] ?? [])[0] ?? '').length])
+      expect([name, s, i, inDesk(f, D.screenAt)]).toEqual([name, s, i, true])
+    })
+    for (const [p, s] of Object.entries(set.props)) checkSprite(`${name} prop ${p}`, s, false)
+    for (const spot of [...set.wallProps, ...set.floorProps]) expect([name, spot.prop, set.props[spot.prop] !== undefined]).toEqual([name, spot.prop, true])
+    expect([name, set.props[set.clock.prop] !== undefined]).toEqual([name, true])
+    for (const st of STATES) {
+      expect([name, st, (set.poses[O.states[st].pose] ?? []).length > 0, (set.screens[O.states[st].screen] ?? []).length > 0]).toEqual([name, st, true, true])
+    }
+    expect([name, (set.screens[O.emptyScreen] ?? []).length > 0]).toEqual([name, true])
+    for (const ch of [...set.wall.trim, set.wall.fill, set.wall.dado.line, ...set.wall.dado.dither, ...set.wall.skirting, set.floor.seam, set.floor.edge, ...set.floor.variants]) {
+      expect([name, ch, known(ch) && ch !== A.clear]).toEqual([name, ch, true])
     }
   }
-  for (const [name, frames] of Object.entries(O.sprite.poses)) check(frames, O.sprite.avatar, `pose ${name}`)
-  for (const [name, frames] of Object.entries(O.sprite.screens)) check(frames, O.sprite.screen, `screen ${name}`)
-  for (const row of O.sprite.base) for (const ch of row) expect([ch, known.has(ch)]).toEqual([ch, true])
-  for (const s of STATES) {
-    const look = O.states[s]
-    expect([s, O.sprite.poses[look.pose] !== undefined, O.sprite.screens[look.screen] !== undefined]).toEqual([s, true, true])
-    for (const letter of Object.keys(look.tint)) expect([s, letter, known.has(letter)]).toEqual([s, letter, true])
-    expect(cells(look.glyph)).toBe(1)
-    expect(T.palettes.theme[look.color] !== undefined).toBe(true)
-  }
-  for (const hex of [...Object.values(O.palette), ...O.shirts, ...STATES.flatMap(s => Object.values(O.states[s].tint))]) expect([hex, /^#[0-9a-f]{6}$/i.test(hex)]).toEqual([hex, true])
-  // A desk fits the narrowest pane, and the card never asks for less than its border and padding.
-  expect(W <= T.pane.minColumns).toBe(true)
-  expect(O.cardCols > O.cardInset).toBe(true)
+  // Each shirt's mid is the agent's pastel accent, in the same order, so the shirt and the accent always agree.
+  expect(A.shirts.map(s => s[1])).toEqual(T.accents.pastel)
+  for (const hex of [...Object.values(A.palette), ...A.shirts.flat(), ...A.hairs.flat(), ...A.skins.flat()]) expect([hex, /^#[0-9a-f]{6}$/.test(hex)]).toEqual([hex, true])
 })
 
-// ================================================================ the rules
+test('an agent keeps its own shirt, hair and skin, its shirt matching its accent', () => {
+  for (const id of ['a', 'b', 'agent-7f3a', 'x1', 'x2']) {
+    const colors = agentColors(id)
+    expect(colors[A.agentLetters.shirt[1]]).toBe(shirtOf(id)[1])
+    expect(A.shirts.some(s => s.every((c, i) => colors[A.agentLetters.shirt[i] as string] === c))).toBe(true)
+    expect(A.hairs.some(h => h.every((c, i) => colors[A.agentLetters.hair[i] as string] === c))).toBe(true)
+    expect(A.skins.some(k => k.every((c, i) => colors[A.agentLetters.skin[i] as string] === c))).toBe(true)
+    expect(agentColors(id)).toEqual(colors)
+  }
+  // Different ids land on different shirts across the list.
+  expect(new Set(Array.from({ length: 24 }, (_, i) => shirtOf(`agent-${i}`)[1])).size).toBe(A.shirts.length)
+})
+
+// ================================================================ what an agent is doing
 
 test('each agent shows its state: its end when finished; a raised hand, a progress bar or typing while it runs', () => {
-  const idle = gateWith([])
-  expect(officeStateOf(card('a', { status: 'done' }), undefined, idle)).toBe('done')
-  expect(officeStateOf(card('a', { status: 'failed' }), undefined, idle)).toBe('failed')
-  expect(officeStateOf(card('a', { status: 'stopped' }), undefined, idle)).toBe('stopped')
-  expect(officeStateOf(card('a', { status: 'whatever' }), undefined, idle)).toBe('stopped')
   const tally = (live: { id: string; tool: string }[]) => ({ id: 'a', calls: live.length, tokens: 0, live, last: '' })
-  expect(officeStateOf(card('a'), undefined, idle)).toBe('typing')
-  expect(officeStateOf(card('a'), tally([{ id: 'e', tool: 'Edit' }]), idle)).toBe('typing')
-  for (const shell of T.tools.shell) expect(officeStateOf(card('a'), tally([{ id: 'b', tool: shell }]), idle)).toBe('watching')
-  // The latest live call decides between a shell and anything else.
-  expect(officeStateOf(card('a'), tally([{ id: 'b', tool: 'Bash' }, { id: 'r', tool: 'Read' }]), idle)).toBe('typing')
-  // A live call with an open ask raises the hand, over a shell; an ask settled or another agent's does not.
-  const live = tally([{ id: 'k', tool: 'Bash' }])
-  expect(officeStateOf(card('a'), live, gateWith([{ id: 'k', verdict: 'ask' }]))).toBe('waiting')
-  expect(officeStateOf(card('a'), live, gateWith([{ id: 'k', verdict: 'cleared' }]))).toBe('watching')
-  expect(officeStateOf(card('a'), live, gateWith([{ id: 'other', verdict: 'ask' }]))).toBe('watching')
-  // A finished agent shows its end even with a call left live.
-  expect(officeStateOf(card('a', { status: 'done' }), live, gateWith([{ id: 'k', verdict: 'ask' }]))).toBe('done')
-  expect(toolNow(card('a'), live)).toBe('Bash')
-  expect(toolNow(card('a', { status: 'done' }), live)).toBe(null)
-  expect(toolNow(card('a'), undefined)).toBe(null)
+  expect(officeStateOf(card('a', { status: 'done' }), undefined, blankGate)).toBe('done')
+  expect(officeStateOf(card('a', { status: 'failed' }), undefined, blankGate)).toBe('failed')
+  expect(officeStateOf(card('a', { status: 'stopped' }), undefined, blankGate)).toBe('stopped')
+  expect(officeStateOf(card('a'), undefined, blankGate)).toBe('typing')
+  expect(officeStateOf(card('a'), tally([{ id: 'c1', tool: 'Edit' }]), blankGate)).toBe('typing')
+  for (const shell of T.tools.shell) expect(officeStateOf(card('a'), tally([{ id: 'c1', tool: shell }]), blankGate)).toBe('watching')
+  // The latest call decides: a shell call then an edit is typing again.
+  expect(officeStateOf(card('a'), tally([{ id: 'c1', tool: 'Bash' }, { id: 'c2', tool: 'Edit' }]), blankGate)).toBe('typing')
+  // An ask on any live call raises the hand, ahead of the shell; once cleared or ruled it does not.
+  expect(officeStateOf(card('a'), tally([{ id: 'c1', tool: 'Bash' }]), gateWith([{ id: 'c1', verdict: 'ask' }]))).toBe('waiting')
+  expect(officeStateOf(card('a'), tally([{ id: 'c1', tool: 'Bash' }]), gateWith([{ id: 'c1', verdict: 'cleared' }]))).toBe('watching')
+  expect(officeStateOf(card('a'), tally([{ id: 'c1', tool: 'Bash' }]), gateWith([{ id: 'c9', verdict: 'ask' }]))).toBe('watching')
+  expect(toolNow(card('a'), tally([{ id: 'c1', tool: 'Read' }, { id: 'c2', tool: 'Grep' }]))).toBe('Grep')
+  expect(toolNow(card('a', { status: 'done' }), tally([{ id: 'c1', tool: 'Read' }]))).toBe(null)
+  expect(toolNow(card('a'), tally([]))).toBe(null)
 })
 
 test('only running states move, and only with motion on in the settings and in the data', () => {
@@ -333,108 +434,363 @@ test('only running states move, and only with motion on in the settings and in t
   }
 })
 
-test("desks per row: exactly where n desks and their gaps fit, never fewer than one", () => {
-  for (const n of [1, 2, 3, 4, 7]) {
-    const fits = n * W + (n - 1) * O.deskGap
-    expect([n, desksPerRow(fits - 1), desksPerRow(fits), desksPerRow(fits + 1)]).toEqual([n, Math.max(1, n - 1), n, n])
+test('frames: each state cycles through the least common multiple of its layers, in each set; all desks in step', () => {
+  const lcm = (a: number, b: number) => {
+    let m = Math.max(a, b)
+    while (m % a !== 0 || m % b !== 0) m += 1
+    return m
   }
-  expect(desksPerRow(0)).toBe(1)
-  expect(deskRowsOf([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]])
-  expect(deskRowsOf([], 3)).toEqual([])
-})
-
-test('the hover card stays inside the pane: moved left at the right edge, never past the left one', () => {
-  for (const width of [T.pane.minColumns, 40, 66, 110, 144]) {
-    for (let column = 0; column < desksPerRow(width); column += 1) {
-      const x = column * (W + O.deskGap)
-      const p = cardPlace(column, width)
-      expect([width, column, x + p.left >= 0, x + p.left + p.width <= width, p.width]).toEqual([width, column, true, true, Math.min(O.cardCols, width)])
+  for (const name of SETS) {
+    for (const s of STATES) {
+      const look = O.states[s]
+      const want = lcm(Math.max(1, (A.sets[name].poses[look.pose] ?? []).length), Math.max(1, (A.sets[name].screens[look.screen] ?? []).length))
+      expect([name, s, frameCount(name, s)]).toEqual([name, s, want])
     }
   }
-  // Right at the edge: a card that just fits is not moved; one cell more moves it one left.
-  const edge = O.cardCols
-  expect(cardPlace(0, edge)).toEqual({ left: 0, width: O.cardCols })
-  expect(cardPlace(1, W + O.deskGap + O.cardCols)).toEqual({ left: 0, width: O.cardCols })
-  expect(cardPlace(1, W + O.deskGap + O.cardCols - 1)).toEqual({ left: -1, width: O.cardCols })
+  expect(frameCount(TERM, 'watching') > 1).toBe(true)
+  expect(frameAt(0, 4)).toBe(0)
+  expect(frameAt(O.frameMs - 1, 4)).toBe(0)
+  expect(frameAt(O.frameMs, 4)).toBe(1)
+  expect(frameAt(O.frameMs * 4, 4)).toBe(0)
+  expect(frameAt(O.frameMs * 5, 1)).toBe(0)
+  expect(frameAt(Number.NaN, 4)).toBe(0)
+  expect(frameAt(-5, 4)).toBe(0)
 })
 
-test('frames: each state cycles through the least common multiple of its layers, all desks in step', () => {
-  for (const s of STATES) {
-    const look = O.states[s]
-    const a = O.sprite.poses[look.pose]?.length ?? 1
-    const b = O.sprite.screens[look.screen]?.length ?? 1
-    let lcm = Math.max(a, b)
-    while (lcm % a !== 0 || lcm % b !== 0) lcm += 1
-    expect([s, frameCount(s)]).toEqual([s, lcm])
+// ================================================================ the room
+
+test("desks a row: the data's columns where they fit, one fewer one pixel narrower, never none", () => {
+  for (const name of SETS) {
+    const D = A.sets[name].desk
+    const deskW = (D.base[0] ?? '').length
+    for (let n = 1; n <= D.columns; n += 1) {
+      // n desks fit exactly: margins, n desks and the gaps between them.
+      const exact = 2 * D.margin + (n - 1) * D.pitchX + deskW
+      expect([name, n, roomLayout(name, exact, 1).columns]).toEqual([name, n, n])
+      expect([name, n, roomLayout(name, exact - 1, 1).columns]).toEqual([name, n, Math.max(1, n - 1)])
+    }
+    expect(roomLayout(name, 1, 1).columns).toBe(1)
+    expect(roomLayout(name, 10_000, 1).columns).toBe(D.columns)
   }
-  const n = frameCount('typing')
-  expect([frameAt(O.frameMs - 1, n), frameAt(O.frameMs, n), frameAt(O.frameMs * n - 1, n), frameAt(O.frameMs * n, n)]).toEqual([0, 1, n - 1, 0])
-  expect([frameAt(123_456, 1), frameAt(Number.NaN, n), frameAt(-5, n)]).toEqual([0, 0, 0])
 })
 
-test("every state's every frame composites as the tests' own reading of the sprite", () => {
-  for (const s of STATES) {
-    for (let i = 0; i < frameCount(s); i += 1) {
-      const letters = spriteLetters(s, i)
-      expect(letters.length).toBe(O.sprite.height)
-      const cellsOut = decodeCells(deskCells('agent-x', s, i), W)
-      expect([s, i, cellsOut]).toEqual([s, i, expectedCells(expectedPaint('agent-x', s, i))])
+test("rows: the data's base with no agents, one more each time a row fills, up to its most, then the rest are counted", () => {
+  for (const name of SETS) {
+    const D = A.sets[name].desk
+    const width = 2 * D.margin + (D.columns - 1) * D.pitchX + (D.base[0] ?? '').length
+    const base = D.baseRows * D.columns
+    const at = (n: number) => roomLayout(name, width, n)
+    expect([at(0).rows, at(0).capacity, at(0).shown, at(0).more]).toEqual([D.baseRows, base, 0, 0])
+    expect([at(base).rows, at(base).shown]).toEqual([D.baseRows, base])
+    expect([at(base + 1).rows, at(base + 1).shown]).toEqual([D.baseRows + 1, base + 1])
+    const most = D.maxRows * D.columns
+    expect([at(most).rows, at(most).shown, at(most).more]).toEqual([D.maxRows, most, 0])
+    expect([at(most + 1).rows, at(most + 1).shown, at(most + 1).more]).toEqual([D.maxRows, most, 1])
+    expect(at(most + 1).desks.length).toBe(most)
+    // A row is a pitch below the one above; the room grows by a pitch a row.
+    expect(at(base + 1).height - at(base).height).toBe(D.pitchY)
+    // Desks in reading order, a pitch apart, the grid centred.
+    const l = at(D.columns + 1)
+    expect((l.desks[1]?.x ?? 0) - (l.desks[0]?.x ?? 0)).toBe(D.pitchX)
+    expect((l.desks[D.columns]?.y ?? 0) - (l.desks[0]?.y ?? 0)).toBe(D.pitchY)
+    expect(l.desks[0]?.y).toBe(A.sets[name].wall.height + D.top)
+    const left = l.desks[0]?.x ?? 0
+    const right = width - ((l.desks[D.columns - 1]?.x ?? 0) + l.deskW)
+    expect(Math.abs(left - right) <= 1).toBe(true)
+  }
+})
+
+test('props: wall props in their priority order where they fit without overlapping; floor props clear of the desks', () => {
+  for (const name of SETS) {
+    const set = A.sets[name]
+    for (const width of [24, 40, 66, 110, 144, 200, 280, 360]) {
+      const l = roomLayout(name, width, 4)
+      const firstDesk = l.desks[0] as { x: number; y: number }
+      const gridRight = (l.desks[l.columns - 1]?.x ?? 0) + l.deskW
+      for (const [i, p] of l.props.entries()) {
+        expect([name, width, p.name, p.x >= 0 && p.x + p.w <= width && p.y >= 0 && p.y + p.h <= l.height]).toEqual([name, width, p.name, true])
+        for (const q of l.props.slice(i + 1)) {
+          const apart = p.x + p.w < q.x || q.x + q.w < p.x || p.y + p.h < q.y || q.y + q.h < p.y
+          expect([name, width, p.name, q.name, apart]).toEqual([name, width, p.name, q.name, true])
+        }
+        const isFloor = set.floorProps.some(f => f.prop === p.name) && !set.wallProps.some(w => w.prop === p.name && w.y === p.y)
+        if (isFloor) expect([name, width, p.name, p.x + p.w <= firstDesk.x - set.desk.sideGap || p.x >= gridRight + set.desk.sideGap]).toEqual([name, width, p.name, true])
+      }
+      // The first wall prop (the door) is placed whenever it fits, centred at its spot.
+      const door = set.wallProps[0]
+      const doorW = (set.props[door?.prop ?? '']?.[0] ?? '').length
+      const doorX = Math.round((door?.at ?? 0) * width - doorW / 2)
+      expect([name, width, l.props.some(p => p.name === door?.prop && p.x === doorX)]).toEqual([name, width, doorX >= 0 && doorX + doorW <= width])
+    }
+    // A wide room has every prop; a narrow one leaves some out.
+    expect(roomLayout(name, name === TERM ? 140 : 360, 4).props.length).toBe(set.wallProps.length + set.floorProps.length)
+    expect(roomLayout(name, 24, 4).props.length < set.wallProps.length + set.floorProps.length).toBe(true)
+  }
+})
+
+test('the wall: trim on top, the wall, the dado line and its dithered band, the skirting at its foot; the floor in planks', () => {
+  for (const name of SETS) {
+    const set = A.sets[name]
+    const W = set.wall
+    const paint = paintRoom(roomLayout(name, 200, 0), [], NOON)
+    const at = (x: number, y: number) => paint[y]?.[x]
+    // Column 0 is clear of every prop in both sets at this width? Read a column between props instead: the left margin.
+    const l = roomLayout(name, 200, 0)
+    const free = Array.from({ length: 200 }, (_, x) => x).find(x => !l.props.some(p => x >= p.x && x < p.x + p.w)) as number
+    W.trim.forEach((ch, y) => expect([name, y, at(free, y)]).toEqual([name, y, A.palette[ch]]))
+    expect(at(free, W.trim.length)).toBe(A.palette[W.fill])
+    expect(at(free, W.dado.top)).toBe(A.palette[W.dado.line])
+    expect([at(free, W.dado.top + 1), at(free + 1, W.dado.top + 1)].sort()).toEqual([A.palette[W.dado.dither[0]], A.palette[W.dado.dither[1]]].sort())
+    W.skirting.forEach((ch, i) => expect([name, i, at(free, W.height - W.skirting.length + i)]).toEqual([name, i, A.palette[ch]]))
+    for (let y = 0; y < W.height; y += 1) expect(wallLetter(set, 3, y)).toBe(y < W.trim.length ? W.trim[y] : y >= W.height - W.skirting.length ? W.skirting[y - (W.height - W.skirting.length)] : y === W.dado.top ? W.dado.line : y > W.dado.top ? W.dado.dither[(3 + y) % 2] : W.fill)
+    // Every plank's last row is a seam, its first row the lit edge (away from the seam columns).
+    const F = set.floor
+    for (let row = 0; row < 3; row += 1) {
+      const top = W.height + row * F.plankRows
+      expect([name, row, floorLetter(set, 7, top + F.plankRows - 1)]).toEqual([name, row, F.seam])
+      const seams = Array.from({ length: 60 }, (_, x) => floorLetter(set, x, top + 1)).filter(ch => ch === F.seam).length
+      expect([name, row, seams > 0 && seams < 60 / Math.min(...F.lengths) + 2]).toEqual([name, row, true])
+      const edge = Array.from({ length: 60 }, (_, x) => floorLetter(set, x, top))
+      expect([name, row, edge.every(ch => ch === F.edge || ch === F.seam)]).toEqual([name, row, true])
+    }
+    // Planks vary: more than one variant shows on the floor.
+    const body = new Set(Array.from({ length: 200 }, (_, x) => floorLetter(set, x, W.height + 1 + F.plankRows)))
+    expect(F.variants.filter(v => body.has(v)).length > 1 || new Set(F.variants).size === 1).toBe(true)
+  }
+})
+
+test('the clock: hands at the local time, the hour hand moving on through its hour', () => {
+  expect(handAngles(3, 0)).toEqual({ hour: 90, minute: 0 })
+  expect(handAngles(15, 0)).toEqual({ hour: 90, minute: 0 })
+  expect(handAngles(9, 30)).toEqual({ hour: 285, minute: 180 })
+  expect(handAngles(0, 59)).toEqual({ hour: 29.5, minute: 354 })
+  const pivot = { x: 10, y: 10 }
+  expect(handTip(pivot, 4, 0)).toEqual({ x: 10, y: 6 })
+  expect(handTip(pivot, 4, 90)).toEqual({ x: 14, y: 10 })
+  expect(handTip(pivot, 4, 180)).toEqual({ x: 10, y: 14 })
+  expect(handTip(pivot, 4, 270)).toEqual({ x: 6, y: 10 })
+  expect(linePixels({ x: 0, y: 0 }, { x: 3, y: 0 })).toEqual([0, 1, 2, 3].map(x => ({ x, y: 0 })))
+  expect(linePixels({ x: 0, y: 0 }, { x: 0, y: -2 })).toEqual([0, -1, -2].map(y => ({ x: 0, y })))
+  expect(linePixels({ x: 0, y: 0 }, { x: 2, y: 2 })).toEqual([0, 1, 2].map(v => ({ x: v, y: v })))
+  // The local time is the runtime's own clock face.
+  for (const ms of [0, 1_700_000_000_000, 1_762_600_000_000]) {
+    const d = new Date(ms)
+    expect(localTime(ms)).toEqual({ hours: d.getHours(), minutes: d.getMinutes() })
+  }
+  expect(localTime(Number.NaN)).toEqual(localTime(0))
+})
+
+for (const [label, time] of [
+  ['three o\'clock', { hours: 3, minutes: 0 }],
+  ['half past nine', { hours: 21, minutes: 30 }],
+] as const) {
+  test(`the painted clock at ${label}: each hand's tip where its angle points, the hub on top`, () => {
+    for (const name of SETS) {
+      const set = A.sets[name]
+      const K = set.clock
+      const l = roomLayout(name, name === TERM ? 66 : 264, 0)
+      const at = l.clock as { x: number; y: number }
+      expect([name, at !== null]).toEqual([name, true])
+      const paint = paintRoom(l, [], time)
+      const px = (x: number, y: number) => paint[at.y + y]?.[at.x + x]
+      // The tests' own trigonometry: degrees clockwise from twelve.
+      const tip = (len: number, deg: number) => ({ x: K.pivot.x + Math.round(len * Math.sin((deg * Math.PI) / 180)), y: K.pivot.y - Math.round(len * Math.cos((deg * Math.PI) / 180)) })
+      const minuteDeg = time.minutes * 6
+      const hourDeg = ((time.hours % 12) + time.minutes / 60) * 30
+      const m = tip(K.minuteLength, minuteDeg)
+      const h = tip(K.hourLength, hourDeg)
+      if (m.x !== h.x || m.y !== h.y) expect([name, 'minute', px(m.x, m.y)]).toEqual([name, 'minute', A.palette[K.minuteHand]])
+      expect([name, 'hour', px(h.x, h.y)]).toEqual([name, 'hour', A.palette[K.hourHand]])
+      expect([name, 'hub', px(K.pivot.x, K.pivot.y)]).toEqual([name, 'hub', A.palette[K.hub]])
+      // The face elsewhere is the sprite's: a pixel on the far side from both hands is the face.
+      const face = A.sets[name].props[K.prop] as Sprite
+      const opposite = tip(1, (minuteDeg + 180) % 360)
+      const oppositeHour = tip(1, (hourDeg + 180) % 360)
+      if (opposite.x !== oppositeHour.x || opposite.y !== oppositeHour.y || K.hourLength > 1) {
+        const want = A.palette[(face[opposite.y] ?? '')[opposite.x] ?? ''] ?? null
+        const isHand = [m, h].some(t => linePixels(K.pivot, t).some(p => p.x === opposite.x && p.y === opposite.y))
+        if (!isHand) expect([name, 'face', px(opposite.x, opposite.y)]).toEqual([name, 'face', want])
+      }
+    }
+  })
+}
+
+test('the room painted: every desk the state it seats, empty desks an empty chair and the empty screen, props as drawn', () => {
+  for (const name of SETS) {
+    const occupants = STATES.map((s, i) => occupant(`p${i}`, s))
+    const l = roomLayout(name, name === TERM ? 66 : 264, occupants.length)
+    for (const now of [0, O.frameMs, O.frameMs * 2, O.frameMs * 3]) {
+      const seats = seatsFor(l, occupants, now, true)
+      const paint = paintRoom(l, seats, NOON)
+      expect([name, paint.length, paint[0]?.length]).toEqual([name, l.height, l.width])
+      seats.forEach((seat, i) => {
+        if (seat !== null) expect([name, now, seat.frame]).toEqual([name, now, isMoving(seat.state, true) ? frameAt(now, frameCount(name, seat.state)) : 0])
+        expectDesk(`${name} desk ${i} at ${now}`, paint, l, i, seat)
+      })
+      // Every pixel of the room is painted.
+      expect([name, paint.flat().every(c => c !== null)]).toEqual([name, true])
+    }
+    // Props not under a desk show as drawn (the clock's face aside, under its hands).
+    const paint = paintRoom(l, seatsFor(l, occupants, 0, true), NOON)
+    for (const p of l.props) {
+      if (p.name === A.sets[name].clock.prop) continue
+      expectSprite(`${name} ${p.name}`, paint, A.sets[name].props[p.name] as Sprite, p.x, p.y)
     }
   }
 })
 
-test('the states look apart: a green desk when done, a red screen when failed, a raised hand, a growing bar', () => {
-  const paintAt = (s: OfficeStateId, i: number) => expectedPaint('p', s, i)
-  const flat = (p: (string | null)[][]) => p.flat()
-  expect(flat(paintAt('done', 0))).toContain(O.states.done.tint.D)
-  expect(flat(paintAt('typing', 0))).not.toContain(O.states.done.tint.D)
-  expect(flat(paintAt('failed', 0))).toContain(O.palette.R)
-  expect(flat(paintAt('typing', 0))).not.toContain(O.palette.R)
-  // The raised hand is above the head: in the top pixel row only while waiting.
-  expect(paintAt('waiting', 0)[0]?.some(c => c === O.palette.a)).toBe(true)
-  expect(paintAt('typing', 0)[0]?.some(c => c === O.palette.a)).toBe(false)
-  // The progress bar lights one more pixel each frame.
-  const lit = (i: number) => flat(paintAt('watching', i)).filter(c => c === O.palette.g).length
-  expect(Array.from({ length: frameCount('watching') }, (_, i) => lit(i))).toEqual(Array.from({ length: frameCount('watching') }, (_, i) => i + 1))
-  // Typing frames differ from one another: the hands and the screen move.
-  expect(deskCells('p', 'typing', 0) === deskCells('p', 'typing', 1)).toBe(false)
+test('seats: the first agents in spawn order, at the frame the clock is on while moving, the first frame when still', () => {
+  const l = roomLayout(TERM, 66, 8)
+  const occupants = [occupant('a', 'typing'), occupant('b', 'done'), occupant('c', 'watching')]
+  const now = O.frameMs * 5
+  const seats = seatsFor(l, occupants, now, true)
+  expect(seats.length).toBe(l.capacity)
+  expect(seats.slice(0, 3)).toEqual([
+    { id: 'a', state: 'typing', frame: frameAt(now, frameCount(TERM, 'typing')) },
+    { id: 'b', state: 'done', frame: 0 },
+    { id: 'c', state: 'watching', frame: frameAt(now, frameCount(TERM, 'watching')) },
+  ])
+  expect(seats.slice(3).every(s => s === null)).toBe(true)
+  expect(seatsFor(l, occupants, now, false).slice(0, 3).map(s => s?.frame)).toEqual([0, 0, 0])
+  // Past the room's capacity nobody else is seated.
+  const full = roomLayout(TERM, 66, 30)
+  expect(seatsFor(full, Array.from({ length: 30 }, (_, i) => occupant(`o${i}`, 'typing')), 0, true).filter(s => s !== null).length).toBe(full.capacity)
 })
+
+// ================================================================ the terminal cells
 
 test('half blocks: two pixel rows a cell; upper over lower, lower alone, or a blank', () => {
-  const red = '#ff0000'
-  const blue = '#0000ff'
-  expect(halfBlocks([[red, null, null, red], [blue, blue, null, null]])).toEqual([
+  const cellsOf = halfBlocks([
+    ['#ff0000', null, null],
+    ['#00ff00', '#0000ff', null],
+    ['#123456'],
+  ])
+  expect(cellsOf).toEqual([
     [
-      { glyph: '▀', fg: 0xff0000, bg: 0x0000ff },
+      { glyph: '▀', fg: 0xff0000, bg: 0x00ff00 },
       { glyph: '▄', fg: 0x0000ff, bg: DEFAULT },
       { glyph: ' ', fg: DEFAULT, bg: DEFAULT },
-      { glyph: '▀', fg: 0xff0000, bg: DEFAULT },
     ],
+    [{ glyph: '▀', fg: 0x123456, bg: DEFAULT }],
   ])
-  expect([colorWord('#00ff80'), colorWord(null), colorWord('teal'), colorWord('#12345')]).toEqual([0x00ff80, DEFAULT, DEFAULT, DEFAULT])
-  expect(rasterSize()).toEqual({ columns: W, rows: Math.ceil(O.sprite.height / 2) })
+  expect(colorWord('#abcdef')).toBe(0xabcdef)
+  expect(colorWord('teal')).toBe(DEFAULT)
+  expect(colorWord(null)).toBe(DEFAULT)
 })
 
 test('cells pack as padded base64 of little-endian triplets', () => {
-  const bytes = (s: string) => Uint8Array.from(Array.from(s).map(c => c.charCodeAt(0)))
-  expect([base64(bytes('Man')), base64(bytes('Ma')), base64(bytes('M')), base64(bytes(''))]).toEqual(['TWFu', 'TWE=', 'TQ==', ''])
-  const packed = packCells([[{ glyph: '█', fg: 0xff8800, bg: DEFAULT }, { glyph: 'a', fg: 1, bg: 2 }]])
-  expect(decodeCells(packed, 2)).toEqual([[['█', 0xff8800, DEFAULT], ['a', 1, 2]]])
+  expect(base64(new Uint8Array([1, 2, 3, 4]))).toBe('AQIDBA==')
+  expect(base64(new Uint8Array([255, 254]))).toBe('//4=')
+  const packed = packCells([[{ glyph: '▀', fg: 0x112233, bg: DEFAULT }]])
+  expect(decodeCells(packed, 1)).toEqual([[['▀', 0x112233, DEFAULT]]])
+  expect(terminalRoomWidth(66)).toBe(66)
+  expect(terminalRoomWidth(512)).toBe(512)
+  expect(terminalRoomWidth(513)).toBe(512)
+  expect(terminalRoomWidth(0)).toBe(1)
 })
 
-test('a desk as SVG: still, its one frame; moving, every frame shown in turn for the data\'s time', () => {
-  const still = deskSvg('q', 'done', false, 0)
-  expect(still).not.toContain('<animate')
-  expect(still).toContain(`fill="${O.states.done.tint.D}"`)
-  const moving = deskSvg('q', 'typing', true, 0)
-  const n = frameCount('typing')
-  expect(moving.split('<animate').length - 1).toBe(n)
-  expect(moving).toContain(`dur="${n * O.frameMs}ms"`)
-  expect(moving).toContain(`values="${['1', ...Array.from({ length: n - 1 }, () => '0')].join(';')}"`)
-  // A moving request for a state of one frame is drawn still.
-  expect(frameCount('done')).toBe(1)
-  expect(deskSvg('q', 'done', true, 0)).not.toContain('<animate')
-  expect(moving.length <= 131_072).toBe(true)
+// ================================================================ the desktop SVG
+
+test('paths: one per colour, runs merged into rectangles, reading back to the same picture', () => {
+  const paint: Paint = [
+    ['#111111', '#111111', null, '#222222'],
+    ['#111111', '#111111', '#222222', '#222222'],
+    [null, '#333333', '#333333', null],
+  ]
+  const markup = pathsOf(paint)
+  expect((markup.match(/<path /g) ?? []).length).toBe(3)
+  // The 2x2 block of one colour is one rectangle.
+  expect(markup).toContain('M0 0h2v2h-2z')
+  const back: Paint = Array.from({ length: 3 }, () => Array<string | null>(4).fill(null))
+  fillPaths(back, markup)
+  expect(back).toEqual(paint)
+  const l = roomLayout(FINE, 264, 4)
+  const room = paintRoom(l, seatsFor(l, [occupant('a', 'typing')], 0, true), NOON)
+  const again: Paint = room.map(r => r.map(() => null))
+  fillPaths(again, pathsOf(room))
+  expect(again).toEqual(room)
+})
+
+test('the scale: the pane over the target, whole, held to the range; the room as wide as the pane allows, up to its widest', () => {
+  const D = O.desktop
+  for (let scale = D.minScale; scale <= D.maxScale; scale += 1) {
+    const cols = Math.ceil((scale * D.targetRoomPx) / D.columnPx)
+    expect([scale, desktopScale(cols).scale]).toEqual([scale, scale])
+    if (scale > D.minScale) expect([scale, desktopScale(cols - 1).scale]).toEqual([scale, scale - 1])
+  }
+  expect(desktopScale(1).scale).toBe(D.minScale)
+  expect(desktopScale(100_000).scale).toBe(D.maxScale)
+  const at66 = desktopScale(66)
+  expect(at66.roomWidth).toBe(Math.min(D.maxRoomPx, Math.floor((66 * D.columnPx) / at66.scale)))
+  expect(desktopScale(100_000).roomWidth).toBe(D.maxRoomPx)
+  // The room fills the pane: one more art pixel would not fit.
+  for (const cols of [40, 66, 110, 144]) {
+    const s = desktopScale(cols)
+    if (s.roomWidth < D.maxRoomPx) expect([cols, (s.roomWidth + 1) * s.scale > cols * D.columnPx]).toEqual([cols, true])
+  }
+})
+
+test('the room as SVG: crisp pixels at the scale; still desks plain, moving ones a group a frame with only that frame\'s changes', () => {
+  const occupants = [occupant('a', 'typing'), occupant('b', 'watching'), occupant('c', 'done')]
+  const l = roomLayout(FINE, 264, occupants.length)
+  const seats = seatsFor(l, occupants, 0, true)
+  const moving = seats.map(s => s !== null && isMoving(s.state, true))
+  const svg = roomSvg(l, seats, moving, NOON, 2)
+  expect(svg).toContain('shape-rendering="crispEdges"')
+  const read = svgPixels(svg)
+  expect([read.width, read.height, read.viewW, read.viewH]).toEqual([l.width * 2, l.height * 2, l.width, l.height])
+  // Under the groups: every desk at its first frame.
+  expect(read.paint).toEqual(paintRoom(l, seats.map(s => (s === null ? null : { ...s, frame: 0 })), NOON))
+  // A group for every frame after the first of each moving desk, each the discrete opacity cycle of its frame.
+  const want = frameCount(FINE, 'typing') - 1 + (frameCount(FINE, 'watching') - 1)
+  expect(read.groups.length).toBe(want)
+  const anims = Array.from(svg.matchAll(/<animate attributeName="opacity" values="([^"]+)" dur="(\d+)ms" calcMode="discrete" repeatCount="indefinite"\/>/g))
+  expect(anims.length).toBe(want)
+  const typing = frameCount(FINE, 'typing')
+  expect(anims[0]?.[1]).toBe(Array.from({ length: typing }, (_, k) => (k === 1 ? 1 : 0)).join(';'))
+  expect(Number(anims[0]?.[2])).toBe(typing * O.frameMs)
+  // Laid over the first frame, group k gives frame k of that desk exactly.
+  for (let f = 1; f < typing; f += 1) {
+    const over = read.paint.map(r => r.slice())
+    fillPaths(over, read.groups[f - 1] as string)
+    expect([f, over]).toEqual([f, paintRoom(l, seats.map((s, j) => (s === null ? null : { ...s, frame: j === 0 ? f : 0 })), NOON)])
+  }
+  // Nothing moving: no animation at all.
+  expect(roomSvg(l, seats, seats.map(() => false), NOON, 2)).not.toContain('<animate')
+})
+
+test("the busiest room at the widest scale stays within the engine's SVG size", () => {
+  const D = A.sets[FINE].desk
+  const most = D.maxRows * D.columns
+  const occupants = Array.from({ length: most }, (_, i) => occupant(`busy${i}`, (['typing', 'watching', 'waiting'] as const)[i % 3] ?? 'typing'))
+  for (const cols of [40, 66, 110, 144, 400]) {
+    const { scale, roomWidth } = desktopScale(cols)
+    const l = roomLayout(FINE, roomWidth, most)
+    const seats = seatsFor(l, occupants, 0, true)
+    const svg = roomSvg(l, seats, seats.map(() => true), NOON, scale)
+    expect([cols, svg.length < SVG_LIMIT]).toEqual([cols, true])
+  }
+})
+
+// ================================================================ hover places
+
+test('hover boxes sit over their desks: a pixel a column and two a row on the terminal, scaled on a graphical surface', () => {
+  const l = roomLayout(TERM, 66, 4)
+  for (let i = 0; i < 4; i += 1) {
+    const at = l.desks[i] as { x: number; y: number }
+    const c = deskCells(l, i, 'terminal')
+    expect(c).toEqual({ left: at.x, top: Math.floor(at.y / 2), width: l.deskW, height: Math.ceil((at.y + l.deskH) / 2) - Math.floor(at.y / 2) })
+  }
+  const f = roomLayout(FINE, 264, 4)
+  const D = O.desktop
+  const c = deskCells(f, 1, 'graphical', 2)
+  const at = f.desks[1] as { x: number; y: number }
+  expect(c).toEqual({ left: Math.floor((at.x * 2) / D.columnPx), top: Math.floor((at.y * 2) / D.rowPx), width: Math.ceil((f.deskW * 2) / D.columnPx), height: Math.ceil((f.deskH * 2) / D.rowPx) })
+  // The card stays in the pane: moved left at the right edge, never past the left one.
+  expect(cardPlace(0, 66)).toEqual({ left: 0, width: O.cardCols })
+  expect(cardPlace(66 - O.cardCols, 66).left).toBe(0)
+  expect(cardPlace(66 - O.cardCols + 1, 66).left).toBe(-1)
+  expect(cardPlace(5, 20)).toEqual({ left: -5, width: 20 })
 })
 
 // ================================================================ the view, through the engine
@@ -442,7 +798,6 @@ test('a desk as SVG: still, its one frame; moving, every frame shown in turn for
 test('/roster view office switches to the office; the hotkey and the switch go back to the deck', async ($, on) => {
   host(on)
   expect(await roster($, `${T.desk.verb} office`)).toBe(fill(T.deskText.viewSet, { view: 'office' }))
-  expect(officeText(await officeAt($, 66), 66)[0]).toMatch(new RegExp(`^${OX.title}`))
   expect(await roster($, `${T.desk.verb} cubicle`)).toBe(T.deskText.viewUsage)
   for (const surface of ['terminal', 'desktop'] as const) {
     for (const placement of ['dock', 'inline'] as const) {
@@ -472,77 +827,90 @@ test('the close control closes the pane from the office', async ($, on) => {
   expect(closed).toEqual([PANE])
 })
 
-test('golden frame: three agents at 66 columns, one typing, one at a shell, one done; words, pictures and counts', async ($, on) => {
+test('golden frame: four agents at 66 columns (typing, at a shell, waiting on an ok, done) on the terminal and the desktop', async ($, on) => {
   const { clock } = host(on)
   await clock.advance(3_600_000)
   spawnsAs(on, 'g')
-  const calls = holdCalls(on, ['g1-edit', 'g2-bash'])
+  const calls = holdCalls(on, ['g1-edit', 'g2-bash', 'g3-ask'])
+  on('tool.check', (_$, e) => ({ decision: e.tool_use_id === 'g3-ask' ? 'ask' : 'allow' }) as never)
+  let answer: () => void = () => undefined
+  let asked: () => void = () => undefined
+  const isAsked = new Promise<void>(r => (asked = r))
+  on('classic.PermissionRequest', async () => {
+    asked()
+    await new Promise<void>(r => (answer = r))
+    return { decision: { behavior: 'allow' } } as never
+  })
   on('turn.step', async function* (_$, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'x' } }
   })
   await roster($, `${T.desk.verb} office`)
-  await $.agent.spawn(spawnAsk('Write the parser tests'))
-  await $.agent.spawn(spawnAsk('Run the suite'))
-  await $.agent.spawn(spawnAsk('Review the diff'))
+  for (const task of ['Write the parser tests', 'Run the suite', 'Deploy the preview', 'Review the diff']) await $.agent.spawn(spawnAsk(task))
   const step = $.turn.step({ turnId: 'G', index: 0, model: 'claude-sonnet-5-5', messageCount: 1, agentId: 'g1' })
   for await (const _ of step) void _
   await step.result
   const editing = $.tool.call({ tool: 'Edit', tool_use_id: 'g1-edit', agentId: 'g1', file_path: '/w/parser.test.ts', old_string: 'a', new_string: 'b' } as never)
   const shell = $.tool.call({ tool: 'Bash', tool_use_id: 'g2-bash', agentId: 'g2', command: 'npm test' } as never)
-  await Promise.all([calls.entered('g1-edit'), calls.entered('g2-bash')])
-  await $.turn.complete({ answer: 'looks good', durationMs: 4000, isAborted: false, turnId: 'G3', agentId: 'g3', reason: 'answer' })
-  const tree = await officeAt($, 66)
+  const deploy = $.tool.call({ tool: 'Bash', tool_use_id: 'g3-ask', agentId: 'g3', command: 'deploy' } as never)
+  await Promise.all([calls.entered('g1-edit'), calls.entered('g2-bash'), isAsked])
+  await $.turn.complete({ answer: 'looks good', durationMs: 4000, isAborted: false, turnId: 'G4', agentId: 'g4', reason: 'answer' })
   const now = 3_600_000
-  const lines = officeText(tree, 66)
-  const pic = (id: string, s: OfficeStateId) => expectedCells(expectedPaint(id, s, isMoving(s, true) ? frameAt(now, frameCount(s)) : 0)).map(r => r.map(c => c[0]).join(''))
-  const label = (s: string) => clip(s, W).padEnd(W)
-  const rowOf = (parts: string[]) => parts.join(' '.repeat(O.deskGap)).trimEnd()
-  const p1 = pic('g1', 'typing')
-  const p2 = pic('g2', 'watching')
-  const p3 = pic('g3', 'done')
-  const expected = [
-    [OX.title, fill(OX.counts, { running: 2, total: 3 }), fill(OX.tokens, { tokens: tokensShort(1200) })].join(OX.sep) + ` ${O.hotkey}: ${OX.back} ${G.close}`,
-    '',
-    ...p1.map((_, i) => rowOf([p1[i] ?? '', p2[i] ?? '', p3[i] ?? ''])),
-    rowOf([label('Write the parser tests'), label('Run the suite'), label('Review the diff')]),
-    rowOf([label(O.states.typing.word), label(fill(O.states.watching.word, { tool: 'Bash' })), label(O.states.done.word)]),
+  const states: [string, OfficeStateId, string][] = [
+    ['g1', 'typing', 'Write the parser tests'],
+    ['g2', 'watching', 'Run the suite'],
+    ['g3', 'waiting', 'Deploy the preview'],
+    ['g4', 'done', 'Review the diff'],
   ]
-  expect(lines).toEqual(expected)
-  // The colours: each desk's Raster is the tests' composite for its state, cell for cell.
-  for (const [id, s] of [['g1', 'typing'], ['g2', 'watching'], ['g3', 'done']] as const) {
-    const raster = findNode(tree, n => n.type === 'Raster' && n.props?.key === rasterKey(id))
-    expect([id, raster?.props?.columns, raster?.props?.rows]).toEqual([id, rasterSize().columns, rasterSize().rows])
-    expect([id, decodeCells(String(raster?.props?.cells), W)]).toEqual([id, expectedCells(expectedPaint(id, s, isMoving(s, true) ? frameAt(now, frameCount(s)) : 0))])
-    const words = deskWords(deskBox(tree, id))
-    const color = T.palettes.theme[O.states[s].color]
-    const stateText = findNode(deskBox(tree, id), n => n.type === 'Text' && textIn(n) === words[1])
-    expect([id, stateText?.props?.color]).toEqual([id, color])
-  }
-  // The desktop: SVG pictures, the same words; the running ones animate, the done one is still.
-  const desk = await officeAt($, 66, 'dock', 'desktop')
-  const named = { g1: 'Write the parser tests', g2: 'Run the suite', g3: 'Review the diff' }
-  for (const [id, s] of [['g1', 'typing'], ['g2', 'watching'], ['g3', 'done']] as const) {
-    const box = deskBox(desk, id)
-    const svg = box ? findNode(box, n => n.type === 'Svg') : undefined
-    const source = String(svg?.props?.source ?? '')
-    expect([id, source.includes('<animate')]).toEqual([id, s !== 'done'])
-    expect([id, source.includes(`fill="${shirtOf(id)}"`)]).toEqual([id, true])
-    const said = s === 'watching' ? fill(O.states.watching.word, { tool: 'Bash' }) : O.states[s].word
-    expect(String(svg?.props?.alt)).toBe(fill(OX.alt, { name: clip(named[id], W * 2), state: said }))
-    expect(deskWords(box)).toEqual(deskWords(deskBox(tree, id)))
-    expect(findNode(box, n => n.type === 'Raster')).toBeUndefined()
+  const said = (s: OfficeStateId) => fill(O.states[s].word, { tool: s === 'watching' ? 'Bash' : '' }).trim()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const tree = await officeAt($, 66, 'dock', surface)
+    const top = findNode(tree, n => n.props?.key === 'office-top')
+    expect(textIn(top?.children?.[0])).toBe([OX.title, fill(OX.counts, { running: 3, total: 4 }), fill(OX.tokens, { tokens: tokensShort(1200) })].join(OX.sep))
+    const setName = surface === 'terminal' ? TERM : FINE
+    const { scale, roomWidth } = desktopScale(66)
+    const l = roomLayout(setName, surface === 'terminal' ? 66 : roomWidth, 4)
+    const paint = roomPixels(tree)
+    expect([surface, paint.length >= l.height, paint[0]?.length]).toEqual([surface, true, l.width])
+    states.forEach(([id, s], i) => {
+      const frame = isMoving(s, true) ? frameAt(surface === 'terminal' ? now : 0, frameCount(setName, s)) : 0
+      expectDesk(`${surface} ${id}`, paint, l, i, { id, state: s, frame })
+    })
+    // The two desks past the agents are empty.
+    expectDesk(`${surface} empty 4`, paint, l, 4, null)
+    expectDesk(`${surface} empty 5`, paint, l, 5, null)
+    // The legend: each agent's swatch in its shirt, its name in its accent, what it does in the state's colour.
+    for (const [id, s, task] of states) {
+      const entry = legendOf(tree, id)
+      expect(entry.map(e => e.text)).toEqual([O.legendSwatch, clip(task, O.legendName), said(s)])
+      const accent = T.features.accents ? accentFor(id, T.accents.theme, T.palettes.theme.agent) : T.palettes.theme.agent
+      expect(entry.map(e => e.color)).toEqual([shirtOf(id)[1], accent, T.palettes.theme[O.states[s].color]])
+    }
+    if (surface === 'terminal') {
+      const raster = findNode(tree, n => n.type === 'Raster')
+      expect([raster?.props?.key, raster?.props?.columns, raster?.props?.rows]).toEqual([rasterKey(), l.width, Math.ceil(l.height / 2)])
+    } else {
+      const svg = findNode(tree, n => n.type === 'Svg')
+      expect([svg?.props?.width, svg?.props?.height]).toEqual([l.width * scale, l.height * scale])
+      const agents = states.map(([, s, task]) => fill(OX.legend, { name: task, state: said(s) })).join(OX.sep)
+      expect(svg?.props?.alt).toBe(fill(OX.alt, { desks: l.capacity, agents }))
+      // Three moving desks: their frames are animated; the done desk is not.
+      expect(svgPixels(String(svg?.props?.source)).groups.length).toBe(['typing', 'watching', 'waiting'].reduce((n, s) => n + frameCount(FINE, s as OfficeStateId) - 1, 0))
+      expect(findNode(tree, n => n.type === 'Raster')).toBeUndefined()
+    }
   }
   calls.release('g1-edit')
   calls.release('g2-bash')
+  answer()
   await Promise.all([editing, shell])
+  calls.release('g3-ask')
+  await deploy
 })
 
-test('a permission ask raises the hand; the desk types again once the call is cleared', async ($, on) => {
+test('a permission ask raises the hand and blinks a "?"; the desk types again once the call is cleared', async ($, on) => {
   host(on)
   spawnsAs(on, 'w')
   on('tool.call', () => ({ result: {}, text: 'ok' }) as never)
   on('tool.check', (_$, e) => ({ decision: e.tool_use_id === 'ask1' ? 'ask' : 'allow' }) as never)
-  // The person's answer to the ask is held open, so the desk can be drawn while it waits.
   let answer: () => void = () => undefined
   let asked: () => void = () => undefined
   const isAsked = new Promise<void>(r => (asked = r))
@@ -557,34 +925,51 @@ test('a permission ask raises the hand; the desk types again once the call is cl
   await isAsked
   for (const surface of ['terminal', 'desktop'] as const) {
     const tree = await officeAt($, 66, 'dock', surface)
-    expect(deskWords(deskBox(tree, 'w1'))).toEqual([clip('Deploy the preview', W), O.states.waiting.word])
+    expect(legendOf(tree, 'w1').map(e => e.text)[2]).toBe(O.states.waiting.word)
+    const setName = surface === 'terminal' ? TERM : FINE
+    const l = roomLayout(setName, surface === 'terminal' ? 66 : desktopScale(66).roomWidth, 1)
+    expectDesk(`${surface} waiting`, roomPixels(tree), l, 0, { id: 'w1', state: 'waiting', frame: 0 })
   }
-  const raster = findNode(await officeAt($, 66), n => n.type === 'Raster')
-  expect(decodeCells(String(raster?.props?.cells), W)).toEqual(expectedCells(expectedPaint('w1', 'waiting', frameAt(0, frameCount('waiting')))))
+  // The raised arm differs from a resting pose, and the "?" blinks: its frames differ.
+  for (const name of SETS) {
+    const set = A.sets[name]
+    expect([name, set.poses[O.states.waiting.pose]?.[0]]).not.toEqual([name, set.poses[O.states.watching.pose]?.[0]])
+    const ask = set.screens[O.states.waiting.screen] ?? []
+    expect([name, ask.length > 1, ask[0]?.join('').includes('A'), ask.some(f => !f.join('').includes('A'))]).toEqual([name, true, true, true])
+  }
   answer()
   await pending
-  expect(deskWords(deskBox(await officeAt($, 66), 'w1'))[1]).toBe(O.states.typing.word)
+  expect(legendOf(await officeAt($, 66), 'w1').map(e => e.text)[2]).toBe(O.states.typing.word)
 })
 
-test('a failed agent shows a red screen and a stopped one leans back at a plain desk, on both surfaces', async ($, on) => {
+test('failed: a red screen with an X; stopped: the screen off; done: a green screen and the agent leaning back', async ($, on) => {
   host(on)
   spawnsAs(on, 'f')
   await roster($, `${T.desk.verb} office`)
-  await $.agent.spawn(spawnAsk('Break things'))
-  await $.agent.spawn(spawnAsk('Give up'))
-  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'F1', agentId: 'f1', reason: 'error' } as never)
-  await $.turn.complete({ answer: '', durationMs: 10, isAborted: true, turnId: 'F2', agentId: 'f2', reason: 'aborted' } as never)
-  const tree = await officeAt($, 66)
-  for (const [id, s] of [['f1', 'failed'], ['f2', 'stopped']] as const) {
-    expect(deskWords(deskBox(tree, id))[1]).toBe(O.states[s].word)
-    const raster = findNode(deskBox(tree, id), n => n.type === 'Raster')
-    expect(decodeCells(String(raster?.props?.cells), W)).toEqual(expectedCells(expectedPaint(id, s, 0)))
+  await $.agent.spawn(spawnAsk('Breaks'))
+  await $.agent.spawn(spawnAsk('Cancelled'))
+  await $.agent.spawn(spawnAsk('Finishes'))
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'F1', agentId: 'f1', reason: 'error' } as never)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 'F2', agentId: 'f2', reason: 'aborted' } as never)
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'F3', agentId: 'f3', reason: 'answer' })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const tree = await officeAt($, 66, 'dock', surface)
+    const setName = surface === 'terminal' ? TERM : FINE
+    const l = roomLayout(setName, surface === 'terminal' ? 66 : desktopScale(66).roomWidth, 3)
+    const paint = roomPixels(tree)
+    const words = ['f1', 'f2', 'f3'].map(id => legendOf(tree, id).map(e => e.text)[2])
+    expect([surface, words]).toEqual([surface, [O.states.failed.word, O.states.stopped.word, O.states.done.word]])
+    ;(['failed', 'stopped', 'done'] as const).forEach((s, i) => expectDesk(`${surface} ${s}`, paint, l, i, { id: `f${i + 1}`, state: s, frame: 0 }))
   }
-  const desk = await officeAt($, 66, 'dock', 'desktop')
-  const svgOf = (id: string) => String(findNode(deskBox(desk, id), n => n.type === 'Svg')?.props?.source ?? '')
-  expect(svgOf('f1')).toContain(`fill="${O.palette.R}"`)
-  expect(svgOf('f2')).not.toContain(`fill="${O.palette.R}"`)
-  expect(svgOf('f2')).not.toContain(`fill="${O.states.done.tint.D}"`)
+  // The screens say it: red with an X, off, green with a check; done leans back (its own pose).
+  for (const name of SETS) {
+    const set = A.sets[name]
+    const colorsOf = (screen: string) => new Set((set.screens[screen]?.[0] ?? []).join('').split(''))
+    expect([name, colorsOf(O.states.failed.screen).has('r')]).toEqual([name, true])
+    expect([name, colorsOf(O.states.done.screen).has('G')]).toEqual([name, true])
+    expect([name, [...colorsOf(O.states.stopped.screen)].every(ch => ch === 'o' || ch === 'n')]).toEqual([name, true])
+    expect([name, O.states.done.pose === 'lean', (set.poses.lean ?? []).length > 0]).toEqual([name, true, true])
+  }
 })
 
 test('hovering a desk reveals its card: task, the call running or the last one, tokens, and a live clock', async ($, on) => {
@@ -605,10 +990,13 @@ test('hovering a desk reveals its card: task, the call running or the last one, 
   await calls.entered('h-read')
   for (const surface of ['terminal', 'desktop'] as const) {
     const tree = await officeAt($, 66, 'dock', surface)
-    const desk = deskBox(tree, 'h1')
-    const hover = desk ? findNode(desk, n => n.type === 'Box' && n.props?.position === 'absolute') : undefined
+    const box = deskBox(tree, 'h1')
+    const l = roomLayout(surface === 'terminal' ? TERM : FINE, surface === 'terminal' ? 66 : desktopScale(66).roomWidth, 1)
+    const at = deskCells(l, 0, surface === 'terminal' ? 'terminal' : 'graphical', desktopScale(66).scale)
+    expect([box?.props?.position, box?.props?.top, box?.props?.left, box?.props?.width, box?.props?.height]).toEqual(['absolute', at.top, at.left, at.width, at.height])
+    const hover = cardIn(box)
     expect([hover?.props?.display, hover?.hover?.display, hover?.props?.key]).toEqual(['none', 'flex', undefined])
-    expect([hover?.props?.top, hover?.props?.left, hover?.props?.width]).toEqual([O.cardTop, 0, O.cardCols])
+    expect([hover?.props?.top, hover?.props?.left, hover?.props?.width]).toEqual([O.cardTop, cardPlace(at.left, 66).left, O.cardCols])
     const texts = hover ? nodes(hover).filter(n => n.type === 'Text').map(textIn) : []
     expect(texts).toEqual([
       fill(OX.task, { task: 'Map the call sites' }),
@@ -620,72 +1008,61 @@ test('hovering a desk reveals its card: task, the call running or the last one, 
   }
   calls.release('h-read')
   await reading
-  // Settled, the card names the last call by what it was about.
-  const after = deskBox(await officeAt($, 66), 'h1')
-  const lastLine = after ? nodes(findNode(after, n => n.props?.position === 'absolute')).filter(n => n.type === 'Text').map(textIn)[1] : ''
+  const after = cardIn(deskBox(await officeAt($, 66), 'h1'))
+  const lastLine = after ? nodes(after).filter(n => n.type === 'Text').map(textIn)[1] : ''
   expect(lastLine?.startsWith(fill(OX.last, { call: '' }))).toBe(true)
-  // The live clock in the card counts the agent's time.
   await clock.advance(65_000)
   const ui = await $.ui.mount({ ...paneAsk(66), surface: 'terminal' })
   expect(textIn(await ui.drawn({ in: 'office-clock-h1' }))).toBe('1:05')
   await ui.unmount()
 })
 
-test('a card with no calls says so, and cards at the right edge move left to stay in the pane', async ($, on) => {
+test('a card with no calls says so, a desk at the right edge moves its card left, and empty desks have no hover', async ($, on) => {
   host(on)
   spawnsAs(on, 'e')
   await roster($, `${T.desk.verb} office`)
-  for (let i = 0; i < 4; i += 1) await $.agent.spawn(spawnAsk(`agent ${i}`))
+  for (let i = 0; i < 3; i += 1) await $.agent.spawn(spawnAsk(`agent ${i}`))
   const tree = await officeAt($, 66)
-  for (let i = 0; i < 4; i += 1) {
-    const hover = findNode(deskBox(tree, `e${i + 1}`), n => n.props?.position === 'absolute')
+  const l = roomLayout(TERM, 66, 3)
+  for (let i = 0; i < 3; i += 1) {
+    const hover = cardIn(deskBox(tree, `e${i + 1}`))
     expect(nodes(hover).filter(n => n.type === 'Text').map(textIn)[1]).toBe(OX.noCalls)
-    expect(hover?.props?.left).toBe(cardPlace(i, 66).left)
+    expect(hover?.props?.left).toBe(cardPlace(deskCells(l, i, 'terminal').left, 66).left)
   }
-  expect(cardPlace(3, 66).left < 0).toBe(true)
+  expect((cardIn(deskBox(tree, 'e3'))?.props?.left as number) < 0).toBe(true)
+  expect(nodes(tree).filter(n => String(n.props?.key ?? '').startsWith('office-desk-')).length).toBe(3)
 })
 
-test('desks wrap into rows at 40, 66 and 110 columns, in spawn order, each row within the pane', { timeoutMs: 60_000 }, async ($, on) => {
-  host(on)
-  spawnsAs(on, 'r')
-  await roster($, `${T.desk.verb} office`)
-  for (let i = 0; i < 8; i += 1) await $.agent.spawn(spawnAsk(`desk ${i}`))
-  for (const cols of [40, 66, 110]) {
-    for (const surface of ['terminal', 'desktop'] as const) {
-      const tree = await officeAt($, cols, 'dock', surface)
-      const rows = nodes(tree).filter(n => n.type === 'Box' && String(n.props?.key ?? '').startsWith('office-row-'))
-      const per = desksPerRow(cols)
-      expect([cols, rows.map(r => kidsOf(r).length)]).toEqual([cols, deskRowsOf(Array.from({ length: 8 }, (_, i) => i), per).map(r => r.length)])
-      const order = rows.flatMap(r => kidsOf(r).map(k => String(k.props?.key)))
-      expect(order).toEqual(Array.from({ length: 8 }, (_, i) => `office-desk-r${i + 1}`))
-      for (const r of rows) {
-        const n = kidsOf(r).length
-        expect([cols, n * W + (n - 1) * O.deskGap <= cols, r.props?.columnGap]).toEqual([cols, true, O.deskGap])
-      }
-      // One more desk would not have fitted a row.
-      expect((per + 1) * W + per * O.deskGap > cols).toBe(true)
-    }
-    for (const line of officeText(await officeAt($, cols), cols)) expect([cols, line.includes('<past')]).toEqual([cols, false])
-  }
-  expect([desksPerRow(40), desksPerRow(66), desksPerRow(110)]).toEqual([2, 4, 7])
-})
-
-test("past the data's desks the rest are counted; with none the office says it is empty", async ($, on) => {
+test('the room grows a row when the desks fill, up to its most, then counts the rest; with none it says it is empty', { timeoutMs: 60_000 }, async ($, on) => {
   host(on)
   spawnsAs(on, 'm')
   await roster($, `${T.desk.verb} office`)
-  expect(officeText(await officeAt($, 66), 66).slice(1)).toEqual([OX.empty])
-  for (let i = 0; i < O.maxDesks; i += 1) await $.agent.spawn(spawnAsk(`d${i}`))
-  const full = officeText(await officeAt($, 110), 110)
-  expect(full.some(l => l.startsWith('+'))).toBe(false)
+  const D = A.sets[TERM].desk
+  const empty = await officeAt($, 66)
+  expect(textIn(empty).includes(OX.empty)).toBe(true)
+  const r0 = findNode(empty, n => n.type === 'Raster')
+  const base = roomLayout(TERM, 66, 0)
+  expect(r0?.props?.rows).toBe(Math.ceil(base.height / 2))
+  // Every desk empty.
+  for (let i = 0; i < base.capacity; i += 1) expectDesk(`empty ${i}`, roomPixels(empty), base, i, null)
+  const perRow = base.columns
+  for (let i = 0; i < perRow * D.baseRows; i += 1) await $.agent.spawn(spawnAsk(`d${i}`))
+  expect(findNode(await officeAt($, 66), n => n.type === 'Raster')?.props?.rows).toBe(Math.ceil(base.height / 2))
+  await $.agent.spawn(spawnAsk('a new row'))
+  const grown = roomLayout(TERM, 66, perRow * D.baseRows + 1)
+  expect(grown.rows).toBe(D.baseRows + 1)
+  expect(findNode(await officeAt($, 66), n => n.type === 'Raster')?.props?.rows).toBe(Math.ceil(grown.height / 2))
+  for (let i = perRow * D.baseRows + 1; i < perRow * D.maxRows; i += 1) await $.agent.spawn(spawnAsk(`d${i}`))
+  const full = await officeAt($, 66)
+  expect(textIn(full).includes('+')).toBe(false)
   await $.agent.spawn(spawnAsk('one more'))
-  const over = officeText(await officeAt($, 110), 110)
-  expect(over[over.length - 1]).toBe(fill(OX.more, { n: 1 }))
-  const tree = await officeAt($, 110)
-  expect(nodes(tree).filter(n => String(n.props?.key ?? '').startsWith('office-desk-')).length).toBe(O.maxDesks)
+  const over = await officeAt($, 66)
+  expect(isNode(over) ? textIn(kidsOf(over)[kidsOf(over).length - 1]) : '').toBe(fill(OX.more, { n: 1 }))
+  expect(nodes(over).filter(n => String(n.props?.key ?? '').startsWith('office-desk-')).length).toBe(perRow * D.maxRows)
+  expect(nodes(over).filter(n => String(n.props?.key ?? '').startsWith('office-legend-')).length).toBe(perRow * D.maxRows)
 })
 
-test('inline: a compact row per agent, glyph and words, the rest counted past the pane\'s rows', async ($, on) => {
+test("inline: a compact row per agent, glyph and words, the rest counted past the pane's rows", async ($, on) => {
   host(on)
   spawnsAs(on, 'i')
   const calls = holdCalls(on, ['i-bash'])
@@ -725,7 +1102,7 @@ test("the top row's counts go short below the data's narrow width, and the token
   })
   await roster($, `${T.desk.verb} office`)
   await $.agent.spawn(spawnAsk('Work'))
-  const top = async (cols: number) => textIn(findNode(await officeAt($, cols), n => n.props?.key === 'office-top' )?.children?.[0])
+  const top = async (cols: number) => textIn(findNode(await officeAt($, cols), n => n.props?.key === 'office-top')?.children?.[0])
   expect(await top(T.sizes.narrowBelow)).toBe([OX.title, fill(OX.counts, { running: 1, total: 1 })].join(OX.sep))
   const step = $.turn.step({ turnId: 'N', index: 0, model: 'x', messageCount: 1, agentId: 'n1' })
   for await (const _ of step) void _
@@ -734,7 +1111,7 @@ test("the top row's counts go short below the data's narrow width, and the token
   expect(await top(T.sizes.narrowBelow - 1)).toBe([OX.title, fill(OX.countsNarrow, { running: 1, total: 1 })].join(OX.sep))
 })
 
-test('every office drawing fits from the narrowest pane up and keeps a graphical surface\'s text whole', { timeoutMs: 60_000 }, async ($, on) => {
+test("every office drawing fits from the narrowest pane up and keeps a graphical surface's text whole", { timeoutMs: 120_000 }, async ($, on) => {
   host(on)
   spawnsAs(on, 'z')
   on('tool.call', () => ({ result: {}, text: 'ok' }) as never)
@@ -742,15 +1119,19 @@ test('every office drawing fits from the narrowest pane up and keeps a graphical
   await $.agent.spawn(spawnAsk('An agent with a description far longer than any pane is wide, to be cut', 'a-very-long-subagent-type-name'))
   await $.agent.spawn(spawnAsk('second'))
   await $.tool.call({ tool: 'mcp__some_server__a_tool_with_a_long_name', tool_use_id: 'zz', agentId: 'z1' } as never)
-  for (const cols of [T.pane.minColumns, W, W + O.deskGap + W - 1, 40, 66, 110, 144]) {
+  for (const cols of [T.pane.minColumns, 30, 40, 66, 110, 144]) {
     for (const placement of ['dock', 'inline'] as const) {
       for (const surface of ['terminal', 'desktop'] as const) {
         const tree = await officeAt($, cols, placement, surface)
+        const width = Math.max(cols, T.pane.minColumns)
         for (const n of nodes(tree)) {
           if (n.type === 'Text' && surface === 'desktop') expect([cols, textIn(n), textIn(n) === textIn(n).trim()]).toEqual([cols, textIn(n), true])
-          if (n.type === 'Box' && typeof n.props?.width === 'number') expect([cols, n.props.width <= Math.max(cols, T.pane.minColumns)]).toEqual([cols, true])
+          if (n.type === 'Box' && typeof n.props?.width === 'number') expect([cols, n.props.width <= width]).toEqual([cols, true])
+          if (n.type === 'Raster') expect([cols, Number(n.props?.columns) <= width]).toEqual([cols, true])
+          if (n.type === 'Box' && n.props?.position === 'absolute' && String(n.props?.key ?? '').startsWith('office-desk-')) {
+            expect([cols, (n.props?.left as number) + (n.props?.width as number) <= width || surface === 'desktop']).toEqual([cols, true])
+          }
         }
-        if (placement === 'dock' && surface === 'terminal') for (const line of officeText(tree, Math.max(cols, T.pane.minColumns))) expect(line.includes('<past')).toBe(false)
       }
     }
   }
@@ -758,69 +1139,111 @@ test('every office drawing fits from the narrowest pane up and keeps a graphical
 
 // ---------------------------------------------------------------- motion
 
-test('while agents run, the timer blits each moving desk its next frame; it stops when they finish', async ($, on) => {
+test('while agents run, the timer blits the whole room at each frame; when they finish it slows to the clock and blits nothing', async ($, on) => {
   const { clock, blits } = host(on)
-  const ticks = countReads(on)
   spawnsAs(on, 't')
   await roster($, `${T.desk.verb} office`)
   await $.agent.spawn(spawnAsk('typist'))
   await $.agent.spawn(spawnAsk('finished'))
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'T2', agentId: 't2', reason: 'answer' })
-  const n = frameCount('typing')
+  // A terminal draw tells the timer the room's width.
+  await officeAt($, 66)
+  const n = frameCount(TERM, 'typing')
+  const start = clock.now()
   for (let i = 1; i <= n; i += 1) await clock.advance(O.frameMs)
-  // Only the running desk, one blit a frame, each the frame for the clock's time.
-  expect(blits.map(b => b.key)).toEqual(Array.from({ length: n }, () => rasterKey('t1')))
-  const shown = blits.map(b => decodeCells(b.cells, W))
-  for (let i = 0; i < n; i += 1) expect([i, shown[i]]).toEqual([i, expectedCells(expectedPaint('t1', 'typing', (i + 1) % n))])
+  expect(blits.map(b => b.key)).toEqual(Array.from({ length: n }, () => rasterKey()))
+  const l = roomLayout(TERM, 66, 2)
+  blits.forEach((b, i) => {
+    const now = start + (i + 1) * O.frameMs
+    expect([i, b.columns, b.rows]).toEqual([i, l.width, Math.ceil(l.height / 2)])
+    const paint = rasterPixels(b.cells, l.width)
+    expectDesk(`blit ${i}`, paint, l, 0, { id: 't1', state: 'typing', frame: frameAt(now, n) })
+    expectDesk(`blit ${i} done`, paint, l, 1, { id: 't2', state: 'done', frame: 0 })
+  })
+  // Each blit shows the next frame: consecutive blits differ.
+  expect(new Set(blits.map(b => b.cells)).size).toBe(Math.min(n, blits.length))
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'T1', agentId: 't1', reason: 'answer' })
+  await clock.advance(O.frameMs)
   const before = blits.length
-  // The next tick finds nobody running and stops the timer: no periods after it.
-  await clock.advance(O.frameMs)
-  const stoppedAt = ticks.n
-  for (let i = 0; i < 5; i += 1) await clock.advance(O.frameMs)
+  for (let i = 0; i < 10; i += 1) await clock.advance(O.frameMs)
   expect(blits.length).toBe(before)
-  expect(ticks.n).toBe(stoppedAt)
-  // A new agent starts the timer again.
+  // A new agent starts the frames again.
   await $.agent.spawn(spawnAsk('another'))
+  await officeAt($, 66)
   await clock.advance(O.frameMs)
-  expect(blits[blits.length - 1]?.key).toBe(rasterKey('t3'))
+  expect(blits.length > before).toBe(true)
 })
 
-test('a desk is drawn at the frame the clock is on, so a redraw carries on from the blits', async ($, on) => {
+test('a redraw is at the frame the clock is on, so it carries on from the blits', async ($, on) => {
   const { clock } = host(on)
   spawnsAs(on, 'c')
   await roster($, `${T.desk.verb} office`)
   await $.agent.spawn(spawnAsk('typist'))
-  const n = frameCount('typing')
+  const n = frameCount(TERM, 'typing')
+  const l = roomLayout(TERM, 66, 1)
   for (let k = 1; k <= n; k += 1) {
     await clock.advance(O.frameMs)
-    // The mocked clock starts at 0.
-    const now = k * O.frameMs
-    const raster = findNode(await officeAt($, 66), x => x.type === 'Raster')
-    expect([k, decodeCells(String(raster?.props?.cells), W)]).toEqual([k, expectedCells(expectedPaint('c1', 'typing', frameAt(now, n)))])
+    const now = clock.now()
+    expectDesk(`redraw ${k}`, roomPixels(await officeAt($, 66)), l, 0, { id: 'c1', state: 'typing', frame: frameAt(now, n) })
   }
-  expect(new Set(Array.from({ length: n }, (_, k) => frameAt(O.frameMs * (k + 1), n))).size).toBe(n)
 })
 
-test('the timer runs only in the office: on the deck or the desk nothing is blitted', async ($, on) => {
+test('the wall clock: the room redraws when the minute turns, and not before', async ($, on) => {
+  const { clock, redraws } = host(on)
+  await roster($, `${T.desk.verb} office`)
+  const start = clock.now()
+  const toTurn = 60_000 - (start % 60_000)
+  // The first look only notes the minute.
+  await clock.advance(O.clockCheckMs)
+  const seen = redraws.n
+  const checksBefore = Math.floor((toTurn - 1) / O.clockCheckMs) - 1
+  for (let i = 0; i < checksBefore; i += 1) await clock.advance(O.clockCheckMs)
+  expect(redraws.n).toBe(seen)
+  for (let i = 0; i < Math.ceil(60_000 / O.clockCheckMs) + 1; i += 1) await clock.advance(O.clockCheckMs)
+  expect(redraws.n > seen).toBe(true)
+  // Drawn after the turn, the hands are at the new minute.
+  const tree = await officeAt($, 66)
+  const now = clock.now()
+  const l = roomLayout(TERM, 66, 0)
+  expect(roomPixels(tree)).toEqual(paintRoom(l, [], localTime(now)).concat(l.height % 2 === 1 ? [Array(l.width).fill(null)] : []))
+})
+
+test('the timer runs only in the office: on the deck or the desk no state is read and nothing is blitted', async ($, on) => {
   const { clock, blits } = host(on)
   const ticks = countReads(on)
   spawnsAs(on, 'v')
   await $.agent.spawn(spawnAsk('runs'))
-  // No timer at all outside the office, not merely one that blits nothing: idle time reads no state.
+  await officeAt($, 66)
   const onDeck = ticks.n
   for (let i = 0; i < 4; i += 1) await clock.advance(O.frameMs)
   expect(ticks.n).toBe(onDeck)
   await roster($, `${T.desk.verb} desk`)
   const onDesk = ticks.n
-  for (let i = 0; i < 4; i += 1) await clock.advance(O.frameMs)
+  for (let i = 0; i < 4; i += 1) await clock.advance(O.clockCheckMs)
   expect(ticks.n).toBe(onDesk)
   expect(blits).toEqual([])
   await roster($, `${T.desk.verb} office`)
+  await officeAt($, 66)
   await clock.advance(O.frameMs)
   expect(blits.length).toBe(1)
   await roster($, `${T.desk.verb} deck`)
+  await clock.advance(O.frameMs)
+  const afterDeck = ticks.n
+  for (let i = 0; i < 4; i += 1) await clock.advance(O.clockCheckMs)
+  expect([blits.length, ticks.n]).toEqual([1, afterDeck])
+})
+
+test('inline, or drawn only on the desktop, the timer blits nothing', async ($, on) => {
+  const { clock, blits } = host(on)
+  spawnsAs(on, 'k')
+  await roster($, `${T.desk.verb} office`)
+  await $.agent.spawn(spawnAsk('runs'))
+  await officeAt($, 66, 'inline')
+  await officeAt($, 66, 'dock', 'desktop')
   for (let i = 0; i < 4; i += 1) await clock.advance(O.frameMs)
+  expect(blits).toEqual([])
+  await officeAt($, 66)
+  await clock.advance(O.frameMs)
   expect(blits.length).toBe(1)
 })
 
@@ -829,11 +1252,19 @@ test('with motion off nothing moves: no blits, the first frame, an SVG without a
   spawnsAs(on, 'q')
   await roster($, `${T.desk.verb} office`)
   await $.agent.spawn(spawnAsk('still'))
+  await officeAt($, 66)
   await clock.advance(O.frameMs * 7)
   expect(blits).toEqual([])
-  const raster = findNode(await officeAt($, 66), n => n.type === 'Raster')
-  expect(decodeCells(String(raster?.props?.cells), W)).toEqual(expectedCells(expectedPaint('q1', 'typing', 0)))
+  const l = roomLayout(TERM, 66, 1)
+  expectDesk('still', roomPixels(await officeAt($, 66)), l, 0, { id: 'q1', state: 'typing', frame: 0 })
   expect(String(findNode(await officeAt($, 66, 'dock', 'desktop'), n => n.type === 'Svg')?.props?.source)).not.toContain('<animate')
+})
+
+test('an empty room on the desktop tells a reader every desk is empty', async ($, on) => {
+  host(on)
+  await roster($, `${T.desk.verb} office`)
+  const svg = findNode(await officeAt($, 66, 'dock', 'desktop'), n => n.type === 'Svg')
+  expect(svg?.props?.alt).toBe(fill(OX.alt, { desks: roomLayout(FINE, desktopScale(66).roomWidth, 0).capacity, agents: OX.emptyDesk }))
 })
 
 test('/roster reset keeps the office as the view and empties it', async ($, on) => {
@@ -842,7 +1273,9 @@ test('/roster reset keeps the office as the view and empties it', async ($, on) 
   await roster($, `${T.desk.verb} office`)
   await $.agent.spawn(spawnAsk('Work'))
   expect(await roster($, 'reset')).toBe(T.text.command.reset)
-  expect(officeText(await officeAt($, 66), 66).slice(1)).toEqual([OX.empty])
+  const tree = await officeAt($, 66)
+  expect(textIn(tree).includes(OX.empty)).toBe(true)
+  expect(findNode(tree, n => String(n.props?.key ?? '').startsWith('office-desk-'))).toBeUndefined()
 })
 
 // ---------------------------------------------------------------- stored state from other versions
@@ -870,9 +1303,11 @@ for (const [name, stored, isOffice] of [
     await $.agent.spawn(spawnAsk('Work'))
     for (const surface of ['terminal', 'desktop'] as const) {
       for (const placement of ['dock', 'inline'] as const) {
-        const text = JSON.stringify(await officeAt($, 66, placement, surface))
+        const tree = await officeAt($, 66, placement, surface)
+        const text = JSON.stringify(tree)
         expect(text.includes(T.text.drawFailed.split('{')[0] as string)).toBe(false)
         expect(text.includes(`"${OX.title}`)).toBe(isOffice)
+        if (isOffice && placement === 'dock') expect(findNode(tree, n => n.type === (surface === 'terminal' ? 'Raster' : 'Svg'))).toBeDefined()
       }
     }
   })

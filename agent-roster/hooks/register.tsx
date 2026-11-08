@@ -14,8 +14,9 @@ import { tuning as T } from '../data/agent-roster'
 import type { ArchitectLog, Card, Check, DeskState, GateLog, LogEntry, MainLoop, OtherLoop, RosterTypes, TurnTally, Usage, ViewState } from '../types'
 import { drawDeck } from './deck'
 import { drawDesk } from './desk'
-import { drawOffice, rasterKey } from './office'
-import { deskCells, frameAt, frameCount, isMoving, officeStateOf } from './office-rules'
+import { officeArt } from '../data/office-sprites'
+import { ROOM_RASTER, drawOffice } from './office'
+import { localTime, occupantsOf, roomLayout, roomRaster, seatsFor, terminalRoomWidth } from './office-rules'
 import { DESK_SHAPE, agentStopped, asViewMode, blankDesk, callEnded, callStarted, fixDesk, keepsTodos, requestTokens, todosAfterCall, tokensAdded } from './desk-rules'
 import { cardLabel, faultId, hasMonoFace } from './geometry'
 import {
@@ -78,6 +79,11 @@ const L = T.text.log
 const Z = T.sizes
 const K = T.keep
 const PANE = T.pane.id
+/**
+ * Milliseconds in a minute. Structural: every time zone's offset is whole minutes, so a minute of epoch time turns
+ * when the wall clock's minute does.
+ */
+const MINUTE_MS = 60_000
 
 // ---------------------------------------------------------------- state
 
@@ -543,40 +549,53 @@ async function switchView($: EngineInterface, S: Settings, word: string, pacer: 
   return shown.isPlaced ? fill(T.deskText.viewSet, { view }) : fill(T.deskText.viewHidden, { view, reason: shown.reason })
 }
 
-/** The office's frame timer, held by the hooks module: none while nothing in the office moves. */
-type Pacer = { timer: Timer | null }
-
 /**
- * Starts the office's frame timer when the office is the view, motion is on and an agent runs; stops it otherwise.
- * Cheap to call from any event: with a timer already running it reads nothing.
+ * The office's timer, held by the hooks module: none while the office is not the view. `period` is what it runs at;
+ * `columns` the width the terminal last drew the docked room at (null when no terminal draws it), which a blit must
+ * match; `minute` the wall clock's minute it last saw.
  */
-async function paceOffice($: EngineInterface, S: Settings, pacer: Pacer) {
-  if (pacer.timer !== null) return
-  if (!S.motion || T.office.motion === T.office.motionNone) return
-  const [desk, cards] = await Promise.all([loadDesk($), loadCards($)])
-  if (desk.view !== 'office' || !cards.some(c => c.status === 'running')) return
-  pacer.timer = $.clock.every(T.office.frameMs, () => void officeTick($, S, pacer))
+type Pacer = { timer: Timer | null; period: number; columns: number | null; minute: number | null }
+
+/** Whether anything in the office moves now: motion on in the settings and the data, and an agent running. */
+function officeMoves(S: Settings, cards: Card[]): boolean {
+  return S.motion && T.office.motion !== T.office.motionNone && cards.some(c => c.status === 'running')
 }
 
 /**
- * One office frame: each running desk whose state moves gets its picture for the clock's frame, blitted into its
- * mounted Raster. A Raster not mounted (another surface, the pane closed, a desk past the rows shown) refuses the
- * blit, which is fine. With the office gone or nobody running, the timer stops; the next spawn or switch restarts it.
+ * Keeps the office's timer at the right pace: every `frameMs` while something moves, every `clockCheckMs` while
+ * the office shows and nothing moves (so the wall clock turns), none when another view shows.
+ */
+async function paceOffice($: EngineInterface, S: Settings, pacer: Pacer) {
+  const [desk, cards] = await Promise.all([loadDesk($), loadCards($)])
+  const period = desk.view !== 'office' ? 0 : officeMoves(S, cards) ? T.office.frameMs : T.office.clockCheckMs
+  if (pacer.timer !== null && pacer.period === period) return
+  pacer.timer?.cancel()
+  pacer.timer = null
+  pacer.period = period
+  if (period > 0) pacer.timer = $.clock.every(period, () => void officeTick($, S, pacer))
+}
+
+/**
+ * One office tick. While agents move, the terminal's room is painted at the clock's frames and blitted into its
+ * mounted Raster (a Raster not mounted, or mounted at another size, refuses the blit, which is fine: the next
+ * draw brings it back). When the wall clock's minute has turned, every surface redraws. Then the pace is checked,
+ * so the timer slows when nobody runs and stops when the office is gone.
  */
 async function officeTick($: EngineInterface, S: Settings, pacer: Pacer) {
   const [desk, cards, gate, now] = await Promise.all([loadDesk($), loadCards($), loadGate($), $.clock.now()])
-  if (desk.view !== 'office' || !cards.some(c => c.status === 'running')) {
-    pacer.timer?.cancel()
-    pacer.timer = null
-    return
+  if (desk.view === 'office') {
+    const minute = Math.floor(now / MINUTE_MS)
+    const turned = pacer.minute !== null && pacer.minute !== minute
+    pacer.minute = minute
+    if (turned) $.ui.invalidate('ui.render')
+    else if (officeMoves(S, cards) && pacer.columns !== null) {
+      const occupants = occupantsOf(cards, desk.tallies, gate)
+      const layout = roomLayout(officeArt.terminalSet, terminalRoomWidth(pacer.columns), occupants.length)
+      const r = roomRaster(layout, seatsFor(layout, occupants, now, S.motion), localTime(now))
+      await $.ui.blit({ requestId: PANE, key: ROOM_RASTER, cells: r.cells, columns: r.columns, rows: r.rows }).catch(() => undefined)
+    }
   }
-  const byId = new Map(desk.tallies.map(t => [t.id, t] as const))
-  for (const card of cards.slice(0, T.office.maxDesks)) {
-    const state = officeStateOf(card, byId.get(card.id), gate)
-    if (!isMoving(state, S.motion)) continue
-    const cells = deskCells(card.id, state, frameAt(now, frameCount(state)))
-    await $.ui.blit({ requestId: PANE, key: rasterKey(card.id), cells }).catch(() => undefined)
-  }
+  await paceOffice($, S, pacer)
 }
 
 /**
@@ -636,7 +655,7 @@ export const register: Register = (on, options) => {
   const loopOfCall = new Map<string, string | null>()
   const isolationOfCall = new Map<string, unknown>()
   // The office's frame timer: module state, since a hot reload stops the old timer with the old module.
-  const pacer: Pacer = { timer: null }
+  const pacer: Pacer = { timer: null, period: 0, columns: null, minute: null }
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: T.pane.command, description: T.pane.commandDescription, argumentHint: T.pane.argumentHint })
@@ -923,6 +942,8 @@ export const register: Register = (on, options) => {
       return <table.Text color={color}>{stopwatch((endAt ?? snap.now) - since)}</table.Text>
     }
     if (desk.view === 'office') {
+      // The width the terminal's docked room is drawn at, so the timer's blits match the mounted Raster.
+      if (e.surface === 'terminal') pacer.columns = isInline || !('Raster' in table) ? null : width
       return drawOffice({
         els: table,
         surface: e.surface,

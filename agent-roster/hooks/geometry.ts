@@ -95,10 +95,15 @@ export function hasMonoFace(v: { version?: string; base?: string } | null | unde
   return true
 }
 
+/** A place among `n` for an id, the same every time: what keeps an agent's accent, shirt and hair its own. */
+export function indexFor(id: string, n: number): number {
+  let hash = 0
+  for (const ch of id) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) % 1_000_003
+  return n > 0 ? hash % n : 0
+}
+
 /** An agent's accent from `accents`, the same for an id every time; `fallback` when the list is empty. */
 export function accentFor(id: string, accents: readonly string[], fallback: string): string {
   if (accents.length === 0) return fallback
-  let hash = 0
-  for (const ch of id) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) % 1_000_003
-  return accents[hash % accents.length] as string
+  return accents[indexFor(id, accents.length)] as string
 }

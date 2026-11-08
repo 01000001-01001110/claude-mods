@@ -285,8 +285,9 @@ export const tuning: Tuning = {
     viewUsage: 'Usage: /roster view deck|desk|office',
     viewHidden: 'View set to {view}; the pane is not shown yet: {reason}',
   },
-  // The office: a third view of the pane (DESIGN.md, additions), `/roster view office` and the hotkey. One desk per
-  // agent, a pixel avatar at each; hover a desk for its card. Every frame, size, colour and timing is here.
+  // The office: a third view of the pane (DESIGN.md, additions), `/roster view office` and the hotkey. A pixel-art
+  // room with a desk per agent; hover a desk for its card. The pictures are in `data/office-sprites.ts`; every
+  // timing, size and word is here.
   office: {
     hotkey: 'h',
     // A running desk's next frame comes this often (terminal blits, desktop SVG animation).
@@ -294,115 +295,36 @@ export const tuning: Tuning = {
     // 'running' animates running desks; motionNone ('none') keeps every desk on its first frame.
     motion: 'running',
     motionNone: 'none',
-    // Cells between desks in a row, and blank rows between rows of desks.
-    deskGap: 2,
-    rowGap: 1,
-    // Desks drawn docked; the rest are counted.
-    maxDesks: 12,
+    // While the office shows, the wall clock is looked at this often and the room redrawn when the minute turned.
+    clockCheckMs: 15000,
+    // Graphical surfaces: CSS pixels a column and a row, the room's target and widest width in art pixels, and
+    // the whole-number scale's range. The scale is the pane's width over the target, held to the range.
+    desktop: { columnPx: 8, rowPx: 18, targetRoomPx: 240, maxRoomPx: 360, minScale: 2, maxScale: 6 },
     // The hover card: its width (border and padding included), its row below the desk's top, its border and
     // padding cells, and its backdrop per palette (a terminal paints nothing under a Box without one).
     cardCols: 34,
-    cardTop: 1,
+    cardTop: 2,
     cardInset: 4,
     cardBg: { theme: 'inverseText', pastel: '#111827' },
-    // CSS pixels per sprite pixel on graphical surfaces.
-    svgPx: 7,
-    // Shirt colours, one per agent by its id (the avatar's `s` pixels).
-    shirts: ['#60a5fa', '#f472b6', '#a78bfa', '#34d399', '#fbbf24', '#f87171'],
-    // Sprite letters to colours; '.' is see-through, `s` is the agent's shirt.
-    palette: {
-      M: '#4b5563',
-      S: '#0f2a4a',
-      K: '#9ca3af',
-      c: '#374151',
-      D: '#b45309',
-      L: '#78350f',
-      h: '#3b2416',
-      f: '#f2c38f',
-      a: '#f2c38f',
-      p: '#27324a',
-      o: '#111827',
-      t: '#7dd3fc',
-      g: '#4ade80',
-      R: '#b91c1c',
-      w: '#fecaca',
-      A: '#fbbf24',
-      Z: '#1f2937',
-    },
-    // The desk, 14 by 12 pixels (a terminal draws two pixel rows a cell row, so 14 by 6 cells). Poses lay over it at
-    // `avatar`, screens at `screen`; a state's frames run through its pose and screen frames together.
-    sprite: {
-      width: 14,
-      height: 12,
-      avatar: { x: 1, y: 0 },
-      screen: { x: 9, y: 2 },
-      base: [
-        '..............',
-        '........MMMMMM',
-        '........MSSSSM',
-        '........MSSSSM',
-        '........MSSSSM',
-        'c.......MMMMMM',
-        'c..........M..',
-        'c....KKK..MMM.',
-        'c...DDDDDDDDDD',
-        'cccc.L......L.',
-        '.c.c.L......L.',
-        '.c.c.L......L.',
-      ],
-      poses: {
-        type: [
-          ['.......', '.hhh...', '.hff...', '..ff...', '.sss...', 'sssss..', 'sss.aa.', 'sss...a', 'pppp...', '...p...', '...p...', '...pp..'],
-          ['.......', '.hhh...', '.hff...', '..ff...', '.sss...', 'sssss..', 'sss.a..', 'sss.aa.', 'pppp...', '...p...', '...p...', '...pp..'],
-        ],
-        rest: [
-          ['.......', '.hhh...', '.hff...', '..ff...', '.sss...', 'ssss...', 'sssaaa.', 'sss....', 'pppp...', '...p...', '...p...', '...pp..'],
-        ],
-        raise: [
-          ['....a..', '.hhhs..', '.hffs..', '..ffs..', '.ssss..', 'ssss...', 'sss....', 'sss....', 'pppp...', '...p...', '...p...', '...pp..'],
-          ['.....a.', '.hhh.s.', '.hffs..', '..ffs..', '.ssss..', 'ssss...', 'sss....', 'sss....', 'pppp...', '...p...', '...p...', '...pp..'],
-        ],
-        lean: [
-          ['.......', 'hhh....', 'hff....', '.ff....', '.sss...', 'ssss...', 'ssaa...', '.ss....', '.ppp...', '...pppo', '.......', '.......'],
-        ],
-      },
-      screens: {
-        code: [
-          ['tt.t', '....', '....'],
-          ['tt.t', 't.tt', '....'],
-          ['tt.t', 't.tt', 'tt..'],
-        ],
-        progress: [
-          ['t...', 'g...', '....'],
-          ['t...', 'gg..', '....'],
-          ['t...', 'ggg.', '....'],
-          ['t...', 'gggg', '....'],
-        ],
-        ask: [
-          ['.AA.', '..A.', '.A..'],
-          ['....', '....', '....'],
-        ],
-        off: [['ZZZZ', 'ZZZZ', 'ZZZZ']],
-        error: [
-          ['wRRw', 'RwwR', 'wRRw'],
-          ['RRRR', 'RRRR', 'RRRR'],
-        ],
-      },
-    },
-    // What each state draws: its pose and screen, its word under the desk ({tool}: the call running), its glyph
-    // inline, its colour (a palette key) and the sprite letters it recolours.
+    // The legend under the room: cells between entries, the most cells a name takes, the swatch glyph.
+    legendGap: 2,
+    legendName: 18,
+    legendSwatch: '■',
+    // What each state draws: the agent's pose and the monitor's screen (names in each art set), its word in the
+    // legend ({tool}: the call running), its glyph inline, and its colour (a palette key).
     states: {
-      typing: { pose: 'type', screen: 'code', word: 'typing', glyph: '⌨', color: 'agent', tint: {} },
-      watching: { pose: 'rest', screen: 'progress', word: 'running {tool}', glyph: '▸', color: 'main', tint: {} },
-      waiting: { pose: 'raise', screen: 'ask', word: 'needs an ok', glyph: '!', color: 'amber', tint: {} },
-      done: { pose: 'lean', screen: 'off', word: 'done', glyph: '✓', color: 'gate', tint: { D: '#16a34a', L: '#166534' } },
-      failed: { pose: 'rest', screen: 'error', word: 'failed', glyph: '✗', color: 'warn', tint: {} },
-      stopped: { pose: 'lean', screen: 'off', word: 'stopped', glyph: '■', color: 'dim', tint: {} },
+      typing: { pose: 'type', screen: 'code', word: 'typing', glyph: '⌨', color: 'agent' },
+      watching: { pose: 'rest', screen: 'progress', word: 'running {tool}', glyph: '▸', color: 'main' },
+      waiting: { pose: 'raise', screen: 'ask', word: 'needs an ok', glyph: '?', color: 'amber' },
+      done: { pose: 'lean', screen: 'done', word: 'done', glyph: '✓', color: 'gate' },
+      failed: { pose: 'rest', screen: 'error', word: 'failed', glyph: '✗', color: 'warn' },
+      stopped: { pose: 'rest', screen: 'off', word: 'stopped', glyph: '■', color: 'dim' },
     },
+    emptyScreen: 'off',
   },
   officeText: {
     title: 'OFFICE',
-    counts: '{running} at work · {total} desks',
+    counts: '{running} at work · {total} agents',
     countsNarrow: '{running}/{total}',
     tokens: '{tokens} agent tok',
     empty: 'the office is empty: each subagent takes a desk as Claude starts it',
@@ -415,7 +337,9 @@ export const tuning: Tuning = {
     tokensLine: 'tok {tokens} · ctx {ctx} · {calls}',
     elapsed: 'time',
     line: '{state} · {tokens} tok · {calls}',
-    alt: '{name}: {state}',
+    alt: 'An office with {desks} desks. {agents}',
+    legend: '{name}: {state}',
+    emptyDesk: 'Every desk is empty.',
     sep: ' · ',
   },
   monoSince: [2, 1, 299],
