@@ -273,10 +273,23 @@ type World = {
   opened: string[]
   closed: string[]
   status: (string | undefined)[]
+  /** Environment variables the mod may read: the home folder the switch file lives under. */
+  env: Record<string, string | undefined>
   clock: ReturnType<typeof mock.clock>
 }
 
+/**
+ * Calls a tool as the main loop does. Through a plain signature: checking each
+ * literal against the kit's tool input type exceeds the checker's depth (TS2589).
+ */
+function callTool($: Kit, input: Record<string, unknown>): Promise<unknown> {
+  return ($.tool.call as unknown as (input: unknown) => Promise<unknown>)(input)
+}
+
 const CWD = '/repo'
+const HOME = '/home/me'
+/** Where the on/off switch is saved. */
+const SWITCH = `${HOME}/${T.power.file}`
 
 /**
  * Stands in for the engine with an in-memory file system that the reviewed
@@ -286,7 +299,7 @@ const CWD = '/repo'
 function engine(on: On, seed: Record<string, string> = {}, opts: { failing?: string; denied?: string } = {}): World {
   const files = new NormMap(Object.entries(seed))
   const clock = mock.clock(on, { now: Date.parse('2026-11-07T14:05:00') })
-  const world: World = { files, reads: [], toasts: [], appended: [], opened: [], closed: [], status: [], clock }
+  const world: World = { files, reads: [], toasts: [], appended: [], opened: [], closed: [], status: [], env: { HOME: HOME }, clock }
   on('fs.read', (_, e) => {
     world.reads.push(e.path)
     return files.has(e.path) ? { value: files.get(e.path)! } : ({ deny: `ENOENT: ${e.path}` } as never)
@@ -296,6 +309,7 @@ function engine(on: On, seed: Record<string, string> = {}, opts: { failing?: str
     return { value: undefined }
   })
   on('session.cwd', () => ({ value: CWD }))
+  on('env.get', (_, e) => ({ value: world.env[e.name] }))
   // The kit stores the row beneath; this hook only reads what the agent will see.
   on('session.append', (_, e, next) => {
     world.appended.push(e.message.content.map(block => ('text' in block ? block.text : '')).join(''))
@@ -367,15 +381,15 @@ function diffsCommand(args = '') {
 }
 
 /** Edits two places far apart in FILE, as two separate hunks of one change. */
-async function editTwice($: Parameters<TestBody>[0]): Promise<void> {
-  await $.tool.call({ tool: 'Write', file_path: FILE, content: ORIGINAL.replace('line 3\n', 'LINE THREE\n').replace('line 25\n', 'LINE 25\nextra\n') })
+async function editTwice($: Kit): Promise<void> {
+  await callTool($, { tool: 'Write', file_path: FILE, content: ORIGINAL.replace('line 3\n', 'LINE THREE\n').replace('line 25\n', 'LINE 25\nextra\n') })
 }
 
 describe('recording edits', () => {
   test('an edit is recorded as hunks, announced, put in the status line, and opens the pane', async ($, on) => {
     const world = engine(on, { [FILE]: ORIGINAL })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' })
     expect(world.toasts).toEqual([fill(T.text.arrived, { n: 1, file: 'src/app.ts' })])
     expect(world.status.at(-1)).toBe(fill(T.text.status, { pending: 1 }))
     expect(world.opened).toEqual(T.autoOpen ? [T.pane.id] : [])
@@ -394,7 +408,7 @@ describe('recording edits', () => {
   test('a new file is one all-added hunk, marked new', async ($, on) => {
     engine(on)
     await $.session.start(START)
-    await $.tool.call({ tool: 'Write', file_path: `${CWD}/new.md`, content: '# hi\nthere\n' })
+    await callTool($, { tool: 'Write', file_path: `${CWD}/new.md`, content: '# hi\nthere\n' })
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
     const text = await drawn(ui)
     expect(text).toMatch(/1 \+ # hi/)
@@ -408,12 +422,12 @@ describe('recording edits', () => {
     const big = `${CWD}/big.txt`
     const world = engine(on, { [FILE]: ORIGINAL, [big]: 'x'.repeat(T.maxFileBytes + 1) }, { failing: `${CWD}/fail.ts`, denied: `${CWD}/deny.ts` })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Edit', file_path: `${CWD}/fail.ts`, old_string: 'a', new_string: 'b' })
-    await $.tool.call({ tool: 'Write', file_path: `${CWD}/deny.ts`, content: 'x' })
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'not there', new_string: 'b' })
-    await $.tool.call({ tool: 'Read', file_path: FILE })
-    await $.tool.call({ tool: 'Edit', file_path: big, old_string: 'x', new_string: 'y' })
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 1\n', new_string: 'line 1\n' })
+    await callTool($, { tool: 'Edit', file_path: `${CWD}/fail.ts`, old_string: 'a', new_string: 'b' })
+    await callTool($, { tool: 'Write', file_path: `${CWD}/deny.ts`, content: 'x' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'not there', new_string: 'b' })
+    await callTool($, { tool: 'Read', file_path: FILE })
+    await callTool($, { tool: 'Edit', file_path: big, old_string: 'x', new_string: 'y' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 1\n', new_string: 'line 1\n' })
     expect(world.toasts).toEqual([])
     expect(world.status.filter(one => one !== undefined)).toEqual([])
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -428,7 +442,7 @@ describe('recording edits', () => {
     const book = `${CWD}/a.ipynb`
     const world = engine(on, { [book]: '{"cells":[]}\n' })
     await $.session.start(START)
-    await $.tool.call({ tool: 'NotebookEdit', notebook_path: book, new_source: '{"cells":[1]}\n' })
+    await callTool($, { tool: 'NotebookEdit', notebook_path: book, new_source: '{"cells":[1]}\n' })
     expect(world.toasts).toEqual([fill(T.text.arrived, { n: 1, file: 'a.ipynb' })])
   })
 
@@ -477,8 +491,8 @@ describe('reviewing', () => {
   test('undo still lands after a later edit moved the lines', async ($, on) => {
     const world = engine(on, { [FILE]: ORIGINAL })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 20\n', new_string: 'LINE TWENTY\n' })
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 1\n', new_string: 'inserted a\ninserted b\nline 1\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 20\n', new_string: 'LINE TWENTY\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 1\n', new_string: 'inserted a\ninserted b\nline 1\n' })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await drawn(ui)).toContain('+ LINE TWENTY')
     await ui.press({ key: 'undo' })
@@ -489,8 +503,8 @@ describe('reviewing', () => {
   test('undo after a later edit changed the same lines is a conflict and touches nothing', async ($, on) => {
     const world = engine(on, { [FILE]: ORIGINAL })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 20\n', new_string: 'LINE TWENTY\n' })
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'LINE TWENTY\n', new_string: 'line twenty, again\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 20\n', new_string: 'LINE TWENTY\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'LINE TWENTY\n', new_string: 'line twenty, again\n' })
     const before = world.files.get(FILE)
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await ui.press({ key: 'undo' })
@@ -506,7 +520,7 @@ describe('reviewing', () => {
     const crlf = ORIGINAL.replace(/\n/g, '\r\n')
     const world = engine(on, { [FILE]: crlf })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Write', file_path: FILE, content: crlf.replace('line 3\r\n', 'LINE THREE\r\n').replace('line 25\r\n', 'LINE 25\r\nextra\r\n') })
+    await callTool($, { tool: 'Write', file_path: FILE, content: crlf.replace('line 3\r\n', 'LINE THREE\r\n').replace('line 25\r\n', 'LINE 25\r\nextra\r\n') })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await ui.press({ key: 'undo-file' })
     expect(world.files.get(FILE)).toBe(crlf)
@@ -519,7 +533,7 @@ describe('reviewing', () => {
     engine(on, { [FILE]: ORIGINAL, [other]: 'b1\nb2\n' })
     await $.session.start(START)
     await editTwice($)
-    await $.tool.call({ tool: 'Edit', file_path: other, old_string: 'b2', new_string: 'B2' })
+    await callTool($, { tool: 'Edit', file_path: other, old_string: 'b2', new_string: 'B2' })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ type: 'Text', text: lit(fill(T.text.summary, { files: 2, hunks: 3, pending: 3 })) })).toBeDefined()
     await ui.press({ key: 'file-1' })
@@ -554,7 +568,7 @@ describe('the redesigned pane', () => {
   test('a long hunk gets a scrollbar; a press at its bottom shows the end; j and k scroll', async ($, on) => {
     engine(on)
     await $.session.start(START)
-    await $.tool.call({ tool: 'Write', file_path: `${CWD}/long.txt`, content: LONG })
+    await callTool($, { tool: 'Write', file_path: `${CWD}/long.txt`, content: LONG })
     const ui = await $.ui.mount({ ...small, surface: 'terminal' })
     expect(await ui.find({ type: 'Client', key: 'scrollbar' })).toBeDefined()
     expect(await drawn(ui)).toContain('+ row 1')
@@ -580,7 +594,7 @@ describe('the redesigned pane', () => {
   test('a short hunk has no scrollbar, and the action bar is always drawn', async ($, on) => {
     engine(on, { [FILE]: ORIGINAL })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' })
     const ui = await $.ui.mount({ ...small, surface: 'terminal' })
     expect(await ui.find({ type: 'Client', key: 'scrollbar' })).toBeUndefined()
     for (const key of ['prev', 'next', 'keep', 'undo', 'keep-all']) expect(await ui.find({ type: 'Button', key })).toBeDefined()
@@ -679,7 +693,7 @@ async function turnEnd($: Kit, turnId: string, agentId?: string): Promise<void> 
 /** One turn of three Edits to FILE: lines 3, 10 and 20. */
 async function threeEdits($: Kit, turnId = 't1'): Promise<void> {
   await turnStart($, turnId)
-  for (const n of [3, 10, 20]) await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: `line ${n}\n`, new_string: `LINE ${n}\n` })
+  for (const n of [3, 10, 20]) await callTool($, { tool: 'Edit', file_path: FILE, old_string: `line ${n}\n`, new_string: `LINE ${n}\n` })
   await turnEnd($, turnId)
 }
 
@@ -801,7 +815,7 @@ describe('the replay through the engine', () => {
     await threeEdits($, 't1')
     await turnStart($, 't2')
     await turnStart($, 'sub', 'agent-1')
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 25\n', new_string: 'LINE 25\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 25\n', new_string: 'LINE 25\n' })
     await turnEnd($, 'sub', 'agent-1')
     await turnEnd($, 't2')
     expect((await $.command.run(diffsCommand(T.replay.args.turn))).text).toBe(fill(T.replayText.replaying, { steps: 1, scope: fill(T.replayText.scopeTurn, { n: 2 }) }))
@@ -825,8 +839,8 @@ describe('the replay through the engine', () => {
     expect(await bandText($)).toBe('engine band')
     await threeEdits($, 't1')
     await turnStart($, 't2')
-    await $.tool.call({ tool: 'Write', file_path: `${CWD}/deny.ts`, content: 'x' })
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 25\n', new_string: 'LINE 25\n' })
+    await callTool($, { tool: 'Write', file_path: `${CWD}/deny.ts`, content: 'x' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 25\n', new_string: 'LINE 25\n' })
     expect(await bandText($, { isWorking: true })).toBe('engine band')
     await turnEnd($, 't2')
     const band = fill(T.replayText.band, { turn: 2, steps: 2, pending: 1 }) + fill(T.replayText.bandBlocked, { blocked: 1 })
@@ -879,9 +893,9 @@ describe('the replay through the engine', () => {
   test('denied and failed calls play with their outcome, reason and the diff they would have made', async ($, on) => {
     engine(on, { [FILE]: ORIGINAL, [`${CWD}/deny.ts`]: 'keep me\n' }, { denied: `${CWD}/deny.ts` })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Write', file_path: `${CWD}/deny.ts`, content: 'replaced\n' })
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'not in the file', new_string: 'whatever' })
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE 3\n' })
+    await callTool($, { tool: 'Write', file_path: `${CWD}/deny.ts`, content: 'replaced\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'not in the file', new_string: 'whatever' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE 3\n' })
     await $.command.run(diffsCommand(T.replay.args.replay))
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     let text = await drawn(ui)
@@ -910,7 +924,7 @@ describe('the replay through the engine', () => {
   test('a failed Edit whose text cannot be placed is shown from the call, and says so', async ($, on) => {
     engine(on, { [FILE]: ORIGINAL })
     await $.session.start(START)
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'nope', new_string: 'yes' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'nope', new_string: 'yes' })
     await $.command.run(diffsCommand(T.replay.args.replay))
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
     expect(await drawn(ui)).toContain(T.replayText.snippet)
@@ -1018,7 +1032,7 @@ describe('the replay through the engine', () => {
     expect((await $.command.run(diffsCommand(T.replay.args.replay))).text).toBe(T.replayText.noSteps)
     expect((await $.command.run(diffsCommand(T.replay.args.turn))).text).toBe(T.replayText.noSteps)
     await threeEdits($)
-    await $.tool.call({ tool: 'Edit', file_path: other, old_string: 'b2', new_string: 'B2' })
+    await callTool($, { tool: 'Edit', file_path: other, old_string: 'b2', new_string: 'B2' })
     expect((await $.command.run(diffsCommand(`${T.replay.args.replay} B.TS`))).text).toBe(fill(T.replayText.replaying, { steps: 1, scope: 'b.ts' }))
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await drawn(ui)).toContain('+ B2')
@@ -1030,7 +1044,7 @@ describe('the replay through the engine', () => {
   test('a long step scrolls in the replay too, with the scrollbar', async ($, on) => {
     engine(on)
     await $.session.start(START)
-    await $.tool.call({ tool: 'Write', file_path: `${CWD}/long.txt`, content: Array.from({ length: 120 }, (_, i) => `row ${i + 1}`).join('\n') })
+    await callTool($, { tool: 'Write', file_path: `${CWD}/long.txt`, content: Array.from({ length: 120 }, (_, i) => `row ${i + 1}`).join('\n') })
     await $.command.run(diffsCommand(T.replay.args.replay))
     const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, scroll: { offset: 0, bodyRows: 30 } }, surface: 'terminal' })
     expect(await ui.find({ type: 'Client', key: 'scrollbar' })).toBeDefined()
@@ -1044,7 +1058,7 @@ describe('the replay through the engine', () => {
     engine(on)
     await $.session.start(START)
     const many = T.replay.maxStripCells + 5
-    for (let i = 0; i < many; i++) await $.tool.call({ tool: 'Write', file_path: `${CWD}/f${i}.txt`, content: `v${i}\n` })
+    for (let i = 0; i < many; i++) await callTool($, { tool: 'Write', file_path: `${CWD}/f${i}.txt`, content: `v${i}\n` })
     await $.command.run(diffsCommand(T.replay.args.replay))
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ type: 'Button', key: `step-${T.replay.maxStripCells}` })).toBeDefined()
@@ -1103,13 +1117,99 @@ describe('state an earlier diff-review left behind', () => {
     await ui.unmount()
     expect((await $.command.run(diffsCommand(T.replay.args.replay))).text).toBe(T.replayText.noSteps)
     await $.session.start(START)
-    await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' })
     // A fresh drawing: the first one read through the seeding hook, so it is not subscribed to the kit's store.
     ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await drawn(ui)).toContain('+ LINE THREE')
     expect(await drawn(ui)).toContain(fill(T.text.summary, { files: 1, hunks: 1, pending: 1 }))
     await ui.press({ key: 'replay' })
     expect(await drawn(ui)).toMatch(stepLine(1, 1))
+    await ui.unmount()
+  })
+})
+
+// ---- On/off switch -------------------------------------------------------------
+
+describe('on/off switch', () => {
+  test('/diffs off stops recording, saves the switch, says so in the status line, and /diffs on brings it back', async ($, on) => {
+    const world = engine(on, { [FILE]: ORIGINAL })
+    await $.session.start(START)
+    expect((await $.command.run(diffsCommand(T.command.offArg))).text).toBe(T.text.turnedOff)
+    expect(JSON.parse(world.files.get(SWITCH) ?? 'null')).toEqual({ isOn: false })
+    expect(world.status.at(-1)).toBe(T.text.statusOff === '' ? undefined : T.text.statusOff)
+
+    // Off: the edit still lands, but nothing is recorded, announced or opened, and no band is offered.
+    world.opened.length = 0
+    await turnStart($, 't1')
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' } as never)
+    await turnEnd($, 't1')
+    expect(world.files.get(FILE)).toContain('LINE THREE')
+    expect(world.toasts).toEqual([])
+    expect(world.opened).toEqual([])
+    expect(await bandText($)).toBe('engine band')
+    const off = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await drawn(off)).toContain(T.text.offPane)
+    expect(await off.find({ type: 'Button', key: 'power' })).toBeDefined()
+    await off.unmount()
+
+    // Case and spaces do not matter; on again, the next edit is recorded.
+    expect((await $.command.run(diffsCommand(`  ${T.command.onArg.toUpperCase()} `))).text).toBe(T.text.turnedOn)
+    expect(JSON.parse(world.files.get(SWITCH) ?? 'null')).toEqual({ isOn: true })
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 20\n', new_string: 'LINE 20\n' } as never)
+    expect(world.toasts).toEqual([fill(T.text.arrived, { n: 1, file: 'src/app.ts' })])
+    expect(world.status.at(-1)).toBe(fill(T.text.status, { pending: 1 }))
+  })
+
+  test('the saved switch holds across sessions; a broken or foreign file means the data default', async ($, on) => {
+    const world = engine(on, { [FILE]: ORIGINAL, [SWITCH]: '{ "isOn": false }' })
+    await $.session.start(START)
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' } as never)
+    expect(world.toasts).toEqual([])
+    for (const text of ['not json', '{ "isOn": "no" }', '[]']) {
+      world.files.set(SWITCH, text)
+      await $.session.start(START)
+      await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 9\n', new_string: 'line 9\n\n' } as never)
+      world.files.set(FILE, ORIGINAL)
+      expect(world.toasts.length > 0).toBe(T.power.isOnByDefault)
+      world.toasts.length = 0
+    }
+  })
+
+  test('the pane switch: off from review and from replay, on from the off pane', async ($, on) => {
+    const world = engine(on, { [FILE]: ORIGINAL })
+    await $.session.start(START)
+    await threeEdits($)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const power = await ui.find({ type: 'Button', key: 'power' })
+    expect(power?.props.label).toBe(T.text.turnOff)
+    expect(power?.props.hotkey).toBe(T.hotkeys.power)
+    await ui.press({ key: 'power' })
+    expect(await drawn(ui)).toContain(T.text.offPane)
+    expect((await ui.find({ type: 'Button', key: 'power' }))?.props.label).toBe(T.text.turnOn)
+    expect(JSON.parse(world.files.get(SWITCH) ?? 'null')).toEqual({ isOn: false })
+    await ui.press({ key: 'power' })
+    expect(await drawn(ui)).toContain(fill(T.ui.progress, { done: 0, total: 3 }))
+    // Edits recorded before the switch was flipped are kept.
+    await ui.press({ key: 'replay' })
+    expect(await drawn(ui)).toMatch(stepLine(1, 3))
+    await ui.press({ key: 'power' })
+    expect(await drawn(ui)).toContain(T.text.offPane)
+    await ui.unmount()
+  })
+
+  test('a switch that cannot be saved still holds for the session, and says why', async ($, on) => {
+    const world = engine(on, { [FILE]: ORIGINAL })
+    world.env = {}
+    await $.session.start(START)
+    const reply = (await $.command.run(diffsCommand(T.command.offArg))).text
+    expect(reply).toBe(`${T.text.turnedOff} ${fill(T.text.saveFailed, { reason: 'no home folder' })}`)
+    await callTool($, { tool: 'Edit', file_path: FILE, old_string: 'line 3\n', new_string: 'LINE THREE\n' } as never)
+    expect(world.toasts).toEqual([])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'power' })
+    expect(await drawn(ui)).not.toContain(T.text.offPane)
+    await ui.press({ key: 'power' })
+    expect(await drawn(ui)).toContain(fill(T.text.saveFailed, { reason: 'no home folder' }))
     await ui.unmount()
   })
 })

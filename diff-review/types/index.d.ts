@@ -61,7 +61,15 @@ export type Mode = 'review' | 'replay'
 /** The whole tuning file. */
 export type Tuning = {
   pane: { id: string; title: string }
-  command: { name: string; description: string; argumentHint: string; clearArg: string }
+  /** `onArg` and `offArg` are the words of `/diffs on` and `/diffs off`. */
+  command: { name: string; description: string; argumentHint: string; clearArg: string; onArg: string; offArg: string }
+  /** The on/off switch. Off, no edit is recorded and the pane, band and auto-open stay shut; edits already recorded are kept. */
+  power: {
+    /** Where the switch is saved, under the home folder, so it holds across sessions. */
+    file: string
+    /** Whether diff-review is on before the switch has ever been saved. */
+    isOnByDefault: boolean
+  }
   /** Tools whose successful calls are reviewed; each takes `file_path`. */
   tools: string[]
   /** Unchanged lines shown around each change. */
@@ -106,8 +114,20 @@ export type Tuning = {
     cleared: string
     /** The row the agent reads after an undo: `{file}`, `{start}`, `{end}`, `{diff}`. */
     agentUndo: string
+    /** The switch's button while on, and while off. */
+    turnOff: string
+    turnOn: string
+    /** Replies to `/diffs off` and `/diffs on`. */
+    turnedOff: string
+    turnedOn: string
+    /** The pane while off. */
+    offPane: string
+    /** The status line while off; empty leaves it clear. */
+    statusOff: string
+    /** The switch could not be saved: `{reason}`. It still holds for this session. */
+    saveFailed: string
   }
-  hotkeys: { prev: string; next: string; keep: string; undo: string; keepAll: string; scrollUp: string; scrollDown: string }
+  hotkeys: { prev: string; next: string; keep: string; undo: string; keepAll: string; scrollUp: string; scrollDown: string; power: string }
   colors: {
     accent: string
     dim: string
@@ -240,6 +260,8 @@ declare module 'claude-code' {
       turn: Shaped<TurnMark>
       /** The turn the band offers to replay ('' hides the band). */
       hint: Shaped<string>
+      /** Whether diff-review records edits: the switch, loaded from its file at session start. */
+      isOn: Shaped<boolean>
     }
   }
 }

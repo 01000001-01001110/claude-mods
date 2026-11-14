@@ -14,12 +14,13 @@ Inspired by Replay Theater ([anthropics/claude-code-playground](https://github.c
 - When a turn that edited files ends, a band above the prompt says `▶ turn N: K edit(s) · M to review` (and how many were denied or failed) with **Replay** (`r`) and **×** (`x`). Replay opens that turn's replay; × hides the band. It stays until the next turn with edits replaces it, and hides while a turn runs.
 - `/diffs replay` plays every call; `/diffs replay <part of a file name>` plays the newest matching file's calls; `/diffs turn` plays the last turn with edits, `/diffs turn <n>` turn `n`. `/diffs clear` drops the fully reviewed changes and the denied and failed calls.
 - The status line shows how many hunks are waiting.
+- **On/off switch.** `/diffs off` turns diff-review off: new edits are not recorded, nothing opens by itself, no band is offered, and the status line says `review: off`. Edits recorded earlier are kept. `/diffs on` turns it back on. The pane has the same switch as **⏻ turn off** / **⏻ turn on** (`o`). The switch is saved to `~/.claude/diff-review.json`, so it holds across sessions; if it cannot be saved it still holds for the session and says why.
 
 It never blocks an edit: Claude Code's permission prompt already does that before one lands. This is the review after. A whole-file "restore this version" is not here: it would fight the per-hunk undo.
 
 ## Tuning
 
-Everything is in `data/review.ts`: which tools are reviewed, context lines, file and diff size limits, whether the pane opens by itself, whether the agent hears about undos, the layout (minimum diff rows, gaps, tab size, wheel and hotkey scroll steps), hotkeys, colors (including the added and removed row shading), glyphs, borders, and every line of text (including what the agent reads after an undo). The replay has its own blocks: `replay` (play speed, strip width, turn chips, reason length, the input fields that name a file, the `/diffs` words), `replayText`, `replayKeys` and `replayColors`. It is a typed TypeScript literal; the tests import the same file.
+Everything is in `data/review.ts`: which tools are reviewed, where the on/off switch is saved and whether it starts on, context lines, file and diff size limits, whether the pane opens by itself, whether the agent hears about undos, the layout (minimum diff rows, gaps, tab size, wheel and hotkey scroll steps), hotkeys, colors (including the added and removed row shading), glyphs, borders, and every line of text (including what the agent reads after an undo). The replay has its own blocks: `replay` (play speed, strip width, turn chips, reason length, the input fields that name a file, the `/diffs` words), `replayText`, `replayKeys` and `replayColors`. It is a typed TypeScript literal; the tests import the same file.
 
 ## Develop
 

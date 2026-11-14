@@ -82,6 +82,7 @@ const stepAtom = atom({ plugin: 'diff-review', key: 'step' } as const, 0, { shap
 const playingAtom = atom({ plugin: 'diff-review', key: 'isPlaying' } as const, false, { shape: 'playing-1' })
 const turnAtom = atom({ plugin: 'diff-review', key: 'turn' } as const, { id: '', n: 0 }, { shape: 'turn-1' })
 const hintAtom = atom({ plugin: 'diff-review', key: 'hint' } as const, '', { shape: 'hint-1' })
+const isOnAtom = atom({ plugin: 'diff-review', key: 'isOn' } as const, t.power.isOnByDefault, { shape: 'on-1' })
 
 /** The scrollbar Client's key. An address, not a tunable. */
 const SCROLLBAR = 'scrollbar'
@@ -109,8 +110,64 @@ async function readOrNull($: EngineInterface, path: string): Promise<string | nu
   }
 }
 
-/** Shows the count of hunks left to review in the status line, or clears it. */
+/** The switch file's path under the home folder, or undefined with no home folder. */
+async function powerPath($: EngineInterface): Promise<string | undefined> {
+  // Both names are literals: the engine reads the variables a module uses off its source.
+  const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))
+  return home === undefined ? undefined : `${home.replace(/\\/g, '/').replace(/\/+$/, '')}/${t.power.file}`
+}
+
+/** Reads the saved switch; missing, unreadable or hand-broken means the data default. */
+async function loadPower($: EngineInterface): Promise<boolean> {
+  const path = await powerPath($)
+  const text = path === undefined ? null : await readOrNull($, path)
+  if (text === null) return t.power.isOnByDefault
+  try {
+    const saved = JSON.parse(text) as { isOn?: unknown }
+    return typeof saved.isOn === 'boolean' ? saved.isOn : t.power.isOnByDefault
+  } catch {
+    return t.power.isOnByDefault
+  }
+}
+
+/**
+ * Turns diff-review on or off, live and in its file. Off: a playing replay
+ * stops, the band goes, and the pane (if open) shows the off notice with the
+ * switch. Answers what to tell the person.
+ */
+async function setPower($: EngineInterface, isOn: boolean): Promise<string> {
+  await update($, isOnAtom, () => isOn)
+  if (!isOn) {
+    await stopPlay($)
+    await update($, hintAtom, () => '')
+  }
+  await update($, noticeAtom, () => '')
+  await showStatus($)
+  const said = isOn ? t.text.turnedOn : t.text.turnedOff
+  const path = await powerPath($)
+  try {
+    if (path === undefined) throw new Error('no home folder')
+    await $.fs.write(path, `${JSON.stringify({ isOn }, null, 2)}\n`)
+    return said
+  } catch (err) {
+    return `${said} ${fill(t.text.saveFailed, { reason: err instanceof Error ? err.message : String(err) })}`
+  }
+}
+
+/** Flips the switch from the pane. A save that failed is kept as the pane's notice. */
+async function flipPower($: EngineInterface): Promise<void> {
+  const isOn = !(await read($, isOnAtom))
+  const said = await setPower($, isOn)
+  const plain = isOn ? t.text.turnedOn : t.text.turnedOff
+  await update($, noticeAtom, () => (said === plain ? '' : said))
+}
+
+/** Shows the count of hunks left to review in the status line, or clears it; while off, says so. */
 async function showStatus($: EngineInterface): Promise<void> {
+  if (!(await read($, isOnAtom))) {
+    $.ui.status(t.text.statusOff === '' ? undefined : t.text.statusOff)
+    return
+  }
   const { pending } = counts(await read($, changesAtom))
   $.ui.status(pending > 0 ? fill(t.text.status, { pending }) : undefined)
 }
@@ -433,6 +490,31 @@ function hintRow($: EngineInterface, e: PaneInput, hint: string, top: number) {
 }
 
 /** The review view: one hunk at a time, keep or undo. */
+/** The pane while diff-review is off: what that means, the switch, and close. */
+async function offView($: EngineInterface, e: PaneInput) {
+  const { Box, Button, Text } = $.ui.resolve(e)
+  const notice = await read($, noticeAtom)
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Text color={t.colors.accent} bold>
+        {t.text.title}
+      </Text>
+      <Text dimColor wrap="wrap">
+        {t.text.offPane}
+      </Text>
+      {notice === '' ? null : (
+        <Text color={t.colors.conflict} wrap="wrap">
+          {notice}
+        </Text>
+      )}
+      <Box flexDirection="row" columnGap={t.layout.gap}>
+        <Button key="power" variant="primary" label={t.text.turnOn} hotkey={t.hotkeys.power} onPress={() => flipPower($)} />
+        <Button key="close" label={t.replayText.close} hotkey={t.replayKeys.close} onPress={() => closePane($)} />
+      </Box>
+    </Box>
+  )
+}
+
 async function reviewView($: EngineInterface, e: PaneInput) {
   const { Box, Button, Text } = $.ui.resolve(e)
   const changes = await read($, changesAtom)
@@ -456,7 +538,10 @@ async function reviewView($: EngineInterface, e: PaneInput) {
           {X.title}
         </Text>
         <Text dimColor>{X.empty}</Text>
-        {changes.length > 0 ? <Button key="replay" label={t.replayText.replay} hotkey={R.replay} onPress={() => openReplay($, { kind: 'all' }, 0)} /> : null}
+        <Box flexDirection="row" columnGap={t.layout.gap}>
+          {changes.length > 0 ? <Button key="replay" label={t.replayText.replay} hotkey={R.replay} onPress={() => openReplay($, { kind: 'all' }, 0)} /> : null}
+          <Button key="power" label={X.turnOff} hotkey={K.power} onPress={() => flipPower($)} />
+        </Box>
       </Box>
     )
   }
@@ -482,6 +567,7 @@ async function reviewView($: EngineInterface, e: PaneInput) {
     { key: 'keep-all', label: X.keepAll, hotkey: K.keepAll, on: () => keep($, pendingKeys(changes)), show: tally.pending > 0 },
     { key: 'clear', label: X.clear, on: () => clearReviewed($), show: tally.pending < tally.hunks },
     { key: 'replay', label: t.replayText.replay, hotkey: R.replay, on: () => replayFrom($, item.change.id), show: true },
+    { key: 'power', label: X.turnOff, hotkey: K.power, on: () => flipPower($), show: true },
     { key: 'close', label: t.replayText.close, hotkey: R.close, on: () => closePane($), show: true },
   ].filter(action => action.show)
   const actionRows = rowsOf(actions.map(action => buttonWidth(action.label)), columns - 4, t.layout.gap)
@@ -667,6 +753,7 @@ async function replayView($: EngineInterface, e: PaneInput) {
     { key: 'play', label: isPlaying ? Y.pause : Y.play, hotkey: R.play, on: () => togglePlay($), show: true, primary: true },
     { key: 'next', label: t.text.next, hotkey: K.next, on: () => stepBy($, 1), show: true },
     { key: 'review-this', label: Y.reviewThis, hotkey: R.reviewThis, on: () => reviewStep($, change), show: change.outcome === 'landed' },
+    { key: 'power', label: t.text.turnOff, hotkey: K.power, on: () => flipPower($), show: true },
     { key: 'close', label: Y.close, hotkey: R.close, on: () => closePane($), show: true },
   ].filter(action => action.show)
   const actionRows = rowsOf(actions.map(action => buttonWidth(action.label)), columns - 4, t.layout.gap)
@@ -774,12 +861,16 @@ export const register: Register = on => {
     await $.command.register({ name: t.command.name, description: t.command.description, argumentHint: t.command.argumentHint })
     // A reload drops the play timer, so a replay that was playing is paused.
     await update($, playingAtom, () => false)
+    const isOn = await loadPower($)
+    await update($, isOnAtom, () => isOn)
     await showStatus($)
     return next(e)
   })
 
   on('command.run', { command: 'diffs' }, async ($, e) => {
-    if (e.args.trim().toLowerCase() === t.command.clearArg) {
+    const word = e.args.trim().toLowerCase()
+    if (word === t.command.onArg || word === t.command.offArg) return { text: await setPower($, word === t.command.onArg) }
+    if (word === t.command.clearArg) {
       await clearReviewed($)
       await showStatus($)
       return { text: t.text.cleared }
@@ -802,7 +893,7 @@ export const register: Register = on => {
     const result = await next(e)
     if (e.agentId !== undefined) return result
     await update($, turnAtom, mark => ({ id: '', n: mark.n }))
-    if (turnCounts(await read($, changesAtom), e.turnId).steps > 0) await update($, hintAtom, () => e.turnId)
+    if ((await read($, isOnAtom)) && turnCounts(await read($, changesAtom), e.turnId).steps > 0) await update($, hintAtom, () => e.turnId)
     return result
   })
 
@@ -811,7 +902,8 @@ export const register: Register = on => {
     const tool = String(e.tool)
     const fields = e as unknown as Record<string, unknown>
     const path = pathOf(fields, t.replay.pathKeys)
-    if (!t.tools.includes(tool) || path === null) return next(e)
+    // Off, nothing is recorded: the call passes untouched.
+    if (!t.tools.includes(tool) || path === null || !(await read($, isOnAtom))) return next(e)
     const before = await readOrNull($, path)
     const ran = await next(e)
     if (before !== null && before.length > t.maxFileBytes) return ran
@@ -864,7 +956,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const hint = await read($, hintAtom)
-    if (hint === '' || e.props.hasSurvey || e.props.isWorking) return next(e)
+    if (hint === '' || !(await read($, isOnAtom)) || e.props.hasSurvey || e.props.isWorking) return next(e)
     // The band is shared through the chain: stack what the mods beneath drew under our row.
     const below = await next(e)
     const { Box } = $.ui.resolve(e)
@@ -877,6 +969,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: 'diff-review' }, async ($, e) => {
+    if (!(await read($, isOnAtom))) return offView($, e)
     return (await read($, modeAtom)) === 'replay' ? replayView($, e) : reviewView($, e)
   })
 }
